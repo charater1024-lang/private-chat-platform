@@ -131,15 +131,20 @@ Forbid-Match $bootstrap '(?im)\$env:POSTGRES_' 'Synapse generation must not use 
 # Parse both YAML files with the workspace's pinned Dart yaml package when the
 # local SDK is available. Regex checks above enforce policy; this catches YAML
 # syntax and basic structure errors without starting a container.
-$repositoryDart = Join-Path $repositoryRoot '.tooling/flutter/bin/dart.bat'
-$dart = if (Test-Path -LiteralPath $repositoryDart -PathType Leaf) {
-  Get-Item -LiteralPath $repositoryDart
+$isWindowsHost = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
+  [System.Runtime.InteropServices.OSPlatform]::Windows
+)
+$dartName = if ($isWindowsHost) { 'dart.bat' } else { 'dart' }
+$repositoryDart = Join-Path $repositoryRoot ".tooling/flutter/bin/$dartName"
+$dartPath = if (Test-Path -LiteralPath $repositoryDart -PathType Leaf) {
+  (Get-Item -LiteralPath $repositoryDart -Force).FullName
 } else {
-  Get-Command dart -ErrorAction SilentlyContinue
+  $dartCommand = Get-Command dart -ErrorAction SilentlyContinue
+  if ($null -ne $dartCommand) { $dartCommand.Source }
 }
 
-if ($null -ne $dart) {
-  & $dart.FullName run (Join-Path $repositoryRoot 'scripts/validate_self_host_yaml.dart')
+if (-not [string]::IsNullOrWhiteSpace($dartPath)) {
+  & $dartPath run (Join-Path $repositoryRoot 'scripts/validate_self_host_yaml.dart')
   if ($LASTEXITCODE -ne 0) {
     $failures.Add('Dart YAML syntax/structure validation failed.')
   }
