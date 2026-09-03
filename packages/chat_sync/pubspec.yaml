@@ -1,0 +1,13 @@
+name: chat_sync
+description: Durable ciphertext synchronization state machine for self-hosted chat clients.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

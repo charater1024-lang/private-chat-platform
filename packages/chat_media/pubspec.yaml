@@ -1,0 +1,16 @@
+name: chat_media
+description: Pure Dart media attachment contracts shared by the chat products.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dependencies:
+  crypto: ^3.0.7
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

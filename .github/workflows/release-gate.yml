@@ -1,0 +1,48 @@
+name: Release source gate (no build or publication)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-source-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-source-gate:
+    name: Validate source before trusted native builders
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Flutter SDK
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+
+      - name: Run deterministic source validation
+        shell: pwsh
+        run: ./scripts/check.ps1 -EnforceLockfile
+
+      - name: Generate non-published CycloneDX candidate SBOM
+        shell: pwsh
+        run: ./scripts/generate-sbom.ps1
+
+      - name: Enforce release metadata and signing wiring
+        shell: pwsh
+        run: ./scripts/release-preflight.ps1 -Json
+
+      - name: Confirm source tree stayed unchanged
+        shell: bash
+        run: |
+          git diff --exit-code
+          git status --porcelain=v1 --untracked-files=all > /tmp/chat-platform-release-status.txt
+          test ! -s /tmp/chat-platform-release-status.txt

@@ -1,0 +1,21 @@
+name: chat_platform_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+workspace:
+  - apps/everyday_chat
+  - apps/secure_collab
+  - packages/chat_core
+  - packages/chat_media
+  - packages/chat_media_crypto
+  - packages/chat_media_picker
+  - packages/chat_sync
+  - packages/chat_ui
+  - packages/homeserver_client
+  - packages/homeserver_runtime
+  - packages/key_transparency
+
+dev_dependencies:
+  yaml: ^3.1.4

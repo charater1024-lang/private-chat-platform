@@ -1,0 +1,9 @@
+include: package:lints/recommended.yaml
+
+linter:
+  rules:
+    - avoid_print
+    - directives_ordering
+    - prefer_final_locals
+    - sort_constructors_first
+    - unawaited_futures

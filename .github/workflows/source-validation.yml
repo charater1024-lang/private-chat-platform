@@ -1,0 +1,45 @@
+name: Source validation (no native release build)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-validation:
+    name: Contract, analysis, and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Flutter SDK
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: '3.47.2'
+
+      - name: Record toolchain
+        run: flutter --version
+
+      - name: Run source validation
+        shell: pwsh
+        run: ./scripts/check.ps1 -EnforceLockfile
+
+      - name: Reject generated tracked changes
+        shell: bash
+        run: |
+          git diff --exit-code
+          git status --porcelain=v1 --untracked-files=all > /tmp/chat-platform-source-status.txt
+          test ! -s /tmp/chat-platform-source-status.txt

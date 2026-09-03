@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1536" height="1024" viewBox="0 0 1536 1024">
+  <title>연두·보라 시그니처 캐릭터 최종 기준 시트</title>
+  <desc>모리, 루루, 귀가 정확히 두 개인 보보, 토토, 누리, 두리의 3열 2행 투명 배경 기준 시트</desc>
+  <image href="../../packages/chat_ui/assets/stickers/mori-hello.png" x="0" y="0" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+  <image href="../../packages/chat_ui/assets/stickers/lulu-love.png" x="512" y="0" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+  <image href="../../packages/chat_ui/assets/stickers/bobo-laugh.png" x="1024" y="0" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+  <image href="../../packages/chat_ui/assets/stickers/toto-ok.png" x="0" y="512" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+  <image href="../../packages/chat_ui/assets/stickers/nuri-celebrate.png" x="512" y="512" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+  <image href="../../packages/chat_ui/assets/stickers/duri-sorry.png" x="1024" y="512" width="512" height="512" preserveAspectRatio="xMidYMid meet" />
+</svg>

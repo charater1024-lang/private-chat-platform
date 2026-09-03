@@ -1,0 +1,17 @@
+name: chat_media_crypto
+description: Reviewable client-side chunk encryption for chat attachments.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dependencies:
+  chat_media: ^0.1.0
+  cryptography: ^2.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

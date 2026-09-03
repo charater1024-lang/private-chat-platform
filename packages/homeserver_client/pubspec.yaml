@@ -1,0 +1,19 @@
+name: homeserver_client
+description: Fail-closed conversation-scoped HTTP adapter for the private homeserver.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dependencies:
+  chat_sync: ^0.1.0
+
+dev_dependencies:
+  chat_core: ^0.1.0
+  crypto: ^3.0.7
+  homeserver_runtime: ^0.1.0
+  lints: ^6.0.0
+  test: ^1.25.6

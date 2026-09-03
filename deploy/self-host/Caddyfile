@@ -1,0 +1,35 @@
+{
+    admin off
+    email {$CADDY_ACME_EMAIL}
+    servers {
+        protocols h1 h2
+    }
+}
+
+{$MATRIX_PUBLIC_HOST} {
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        -Server
+    }
+
+    handle /.well-known/matrix/client {
+        header Access-Control-Allow-Origin "*"
+        header Content-Type "application/json"
+        respond "{\"m.homeserver\":{\"base_url\":\"https://{$MATRIX_PUBLIC_HOST}\"}}" 200
+    }
+
+    # Only client paths are public. Admin and federation APIs remain private.
+    @matrix_client path /_matrix/client/* /_matrix/media/* /_synapse/client/*
+    handle @matrix_client {
+        reverse_proxy synapse:8008 {
+            health_uri /_matrix/client/versions
+            health_interval 30s
+        }
+    }
+
+    handle {
+        respond 404
+    }
+}

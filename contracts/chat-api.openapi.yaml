@@ -1,0 +1,2265 @@
+openapi: 3.1.0
+info:
+  title: Personally Owned Closed Homeserver Chat API
+  version: 0.7.0
+  description: |
+    Security-bound contract for Privacy Chat (PRIVACY_CONSUMER) and Secure
+    Collab (SECURE_COLLAB). Both products use TRUE_E2EE on a personally owned,
+    invite-only, closed homeserver. The service relays authenticated ciphertext
+    and never receives conversation plaintext or conversation content keys.
+x-security-invariants:
+  - Both product kinds use TRUE_E2EE; the security mode cannot be changed.
+  - Every installation is PERSONALLY_OWNED, CLOSED_HOMESERVER, invite-only, and non-federated.
+  - Every ACTIVE member may create DIRECT and GROUP conversations without owner approval.
+  - DIRECT has one peer; GROUP has at least two peers; the authenticated creator is implicit.
+  - Every participant belongs to the same homeserver and immutable security domain.
+  - Inline message ciphertext is authenticated, opaque, and bounded to one MiB decoded.
+  - Media bytes are encrypted client-side; the authenticated wire budget is 1 GiB total and 4 MiB per chunk, including authentication tags.
+  - Filename, MIME type, content key, and base nonce exist only inside E2EE message ciphertext.
+  - Media manifests expose no public or presigned URL.
+  - Push payloads are short-lived opaque wake-up values without chat metadata.
+  - Key-transparency leaves and proofs remain off-chain.
+  - An optional chain adapter receives only schema version, protocol domain, and a 32-byte aggregate checkpoint commitment.
+x-e2ee-encrypted-only-fields:
+  - filename
+  - mime_type
+  - content_key
+  - base_nonce
+x-media-ciphertext-budget:
+  unit: bytes
+  authentication_tags_included: true
+  maximum_object_bytes: 1073741824
+  minimum_plan_chunk_bytes: 65536
+  maximum_chunk_bytes: 4194304
+  maximum_chunk_count: 16384
+jsonSchemaDialect: https://json-schema.org/draft/2020-12/schema
+tags:
+  - name: Homeserver
+  - name: Members
+  - name: Registration
+  - name: Conversations
+  - name: Messages
+  - name: Push
+  - name: Encrypted media
+  - name: Key transparency
+  - name: Checkpoint anchors
+
+paths:
+  /v1/homeserver/profile:
+    get:
+      tags: [Homeserver]
+      operationId: getHomeserverProfile
+      summary: Read the immutable homeserver security profile
+      description: |
+        The client verifies the personally owned, closed, non-federated
+        TRUE_E2EE boundary before it opens or creates a conversation.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Authenticated homeserver profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HomeserverProfile'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /v1/members:
+    get:
+      tags: [Members]
+      operationId: listActiveMembers
+      summary: List active members eligible for direct or group chat
+      description: |
+        Results contain only the minimum opaque reference and display fields
+        needed to choose same-homeserver peers.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Page of active members
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemberDirectoryPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/invitations:
+    post:
+      tags: [Registration]
+      operationId: createMemberInvitation
+      summary: Create a short-lived single-use homeserver invitation
+      description: |
+        OWNER or ADMIN only. The high-entropy secret is returned once, omitted
+        from logs, and retained by the service only as a one-way digest.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateInvitationRequest'
+      responses:
+        '201':
+          description: Invitation created; the secret is shown only once
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvitationReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/registrations/accept-invitation:
+    post:
+      tags: [Registration]
+      operationId: acceptMemberInvitation
+      summary: Register one member using a single-use invitation secret
+      description: |
+        The secret stays in the request body. Acceptance atomically consumes it
+        and registers the member's initial public device identity keys.
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcceptInvitationRequest'
+      responses:
+        '201':
+          description: Member registered
+          headers:
+            Cache-Control:
+              schema:
+                const: no-store
+            X-Homeserver-Access-Token:
+              $ref: '#/components/headers/RegistrationAccessToken'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistrationReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '410':
+          description: Invitation expired, revoked, or already consumed
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/conversations:
+    get:
+      tags: [Conversations]
+      operationId: listConversations
+      summary: List conversations visible to the authenticated member
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Page of member-visible conversations
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Conversations]
+      operationId: createConversation
+      summary: Create a direct or group conversation
+      description: |
+        Every ACTIVE member may create a conversation. The creator is implicit
+        and must not appear in member_refs. DIRECT requires one peer and GROUP
+        requires at least two peers, all from this homeserver and domain.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '201':
+          description: Conversation created
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationCreatedReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/conversations/{conversation_id}:
+    get:
+      tags: [Conversations]
+      operationId: getConversation
+      summary: Read one member-visible conversation
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+      responses:
+        '200':
+          description: Conversation metadata
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConversationRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Conversations]
+      operationId: updateConversation
+      summary: Update mutable conversation attributes or membership
+      description: |
+        Product, mode, homeserver, and security-domain bindings are immutable.
+        expected_version provides optimistic concurrency.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateConversationRequest'
+      responses:
+        '200':
+          description: Conversation updated
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/conversations/{conversation_id}/messages:
+    get:
+      tags: [Messages]
+      operationId: synchronizeEncryptedMessages
+      summary: Synchronize opaque encrypted message envelopes
+      description: |
+        Returns a bounded ordered page only to an ACTIVE participant. Cursors
+        are scoped to the caller, conversation, domain, and product.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/SyncCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Ordered encrypted message page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedMessagePage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Messages]
+      operationId: appendMessageEnvelope
+      summary: Append a bounded TRUE_E2EE message envelope
+      description: |
+        The server validates immutable routing bindings and relays opaque
+        authenticated ciphertext capped at one MiB decoded. Plaintext and media
+        bytes are forbidden. Any media object reference, filename, MIME type,
+        content key, and base nonce exist only inside ciphertext.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ConversationId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendMessageRequest'
+      responses:
+        '202':
+          description: Encrypted envelope accepted
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageWriteReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/push/wakeups:
+    post:
+      tags: [Push]
+      operationId: enqueueOpaqueWakeup
+      summary: Enqueue a content-free device wake-up
+      description: |
+        The downstream provider receives only a short-lived random wake token.
+        No conversation, sender, message, ciphertext, preview, or media field is
+        permitted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpaqueWakeupRequest'
+      responses:
+        '202':
+          description: Wake-up queued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WriteReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/media/uploads:
+    post:
+      tags: [Encrypted media]
+      operationId: initiateEncryptedMediaUpload
+      summary: Initiate a resumable encrypted-media upload
+      description: |
+        The client binds the upload to one conversation and precommits the
+        bounded ciphertext size, exact chunk plan, overall SHA-256 digest, and
+        every chunk digest. The caller must be an ACTIVE member of that
+        conversation. No plaintext metadata is accepted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitiateEncryptedMediaUploadRequest'
+      responses:
+        '201':
+          description: Resumable upload session created
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedMediaUploadSession'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/media/uploads/{upload_id}:
+    get:
+      tags: [Encrypted media]
+      operationId: getEncryptedMediaUploadStatus
+      summary: Read resumable encrypted-media upload status
+      description: |
+        The upload identifier is not an authorization capability. The caller
+        must remain an ACTIVE member of the bound conversation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UploadId'
+      responses:
+        '200':
+          description: Current received-chunk state
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedMediaUploadStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/media/uploads/{upload_id}/chunks/{chunk_index}:
+    put:
+      tags: [Encrypted media]
+      operationId: putEncryptedMediaChunk
+      summary: Upload or idempotently replace one encrypted chunk
+      description: |
+        The authenticated ciphertext bytes, declared index, exact planned size,
+        and SHA-256 header must match the immutable upload plan. A retry may
+        replace only an identical chunk. The caller must remain an ACTIVE
+        member of the upload's bound conversation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UploadId'
+        - $ref: '#/components/parameters/ChunkIndex'
+        - $ref: '#/components/parameters/IfMatch'
+        - $ref: '#/components/parameters/ChunkDigest'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              $ref: '#/components/schemas/EncryptedMediaChunkBytes'
+      responses:
+        '204':
+          description: Encrypted chunk stored and digest verified
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/media/uploads/{upload_id}/complete:
+    post:
+      tags: [Encrypted media]
+      operationId: completeEncryptedMediaUpload
+      summary: Atomically complete a verified encrypted-media upload
+      description: |
+        Completion succeeds only when every planned chunk and both chunk-level
+        and whole-object digests match the initiation descriptor. The caller
+        must remain an ACTIVE member of the bound conversation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/UploadId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompleteEncryptedMediaUploadRequest'
+      responses:
+        '200':
+          description: Immutable encrypted-media manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedMediaManifest'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/media/objects/{object_id}/manifest:
+    get:
+      tags: [Encrypted media]
+      operationId: getEncryptedMediaManifest
+      summary: Read an authenticated encrypted-media manifest
+      description: |
+        Returns descriptor data only and never returns a public or presigned
+        URL. The object identifier is not an authorization capability; the
+        caller must be an ACTIVE member of the object's bound conversation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ObjectId'
+      responses:
+        '200':
+          description: Immutable encrypted-media manifest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedMediaManifest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/media/objects/{object_id}/chunks/{chunk_index}:
+    get:
+      tags: [Encrypted media]
+      operationId: downloadEncryptedMediaChunk
+      summary: Download one authenticated encrypted-media chunk
+      description: |
+        Returns bounded ciphertext bytes directly; no URL is issued. The object
+        identifier is not an authorization capability; the caller must be an
+        ACTIVE member of the object's bound conversation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/ObjectId'
+        - $ref: '#/components/parameters/ChunkIndex'
+      responses:
+        '200':
+          description: One encrypted-media chunk
+          headers:
+            X-Ciphertext-Chunk-SHA256:
+              $ref: '#/components/headers/ChunkDigest'
+          content:
+            application/octet-stream:
+              schema:
+                $ref: '#/components/schemas/EncryptedMediaChunkBytes'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/key-transparency/checkpoints/latest:
+    get:
+      tags: [Key transparency]
+      operationId: getLatestKeyTransparencyCheckpoint
+      summary: Read the latest signed key-transparency checkpoint
+      description: |
+        Clients verify the operator signature, independently administered
+        witness threshold, and consistency from their last trusted checkpoint.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Latest signed checkpoint and witness receipts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignedKeyTransparencyCheckpoint'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /v1/key-transparency/proofs/inclusion:
+    post:
+      tags: [Key transparency]
+      operationId: getKeyTransparencyInclusionProof
+      summary: Fetch an inclusion proof for an opaque leaf position
+      description: |
+        The response excludes the per-user leaf. The authenticated client
+        supplies its locally derived opaque commitment during verification.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyTransparencyInclusionProofRequest'
+      responses:
+        '200':
+          description: Bounded SHA-256 inclusion proof
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyTransparencyInclusionProof'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/key-transparency/proofs/consistency:
+    post:
+      tags: [Key transparency]
+      operationId: getKeyTransparencyConsistencyProof
+      summary: Fetch an append-only consistency proof between checkpoints
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/KeyTransparencyConsistencyProofRequest'
+      responses:
+        '200':
+          description: Bounded SHA-256 consistency proof
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyTransparencyConsistencyProof'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/key-transparency/checkpoint-anchors:
+    post:
+      tags: [Checkpoint anchors]
+      operationId: submitAggregateCheckpointAnchor
+      summary: Submit an optional aggregate checkpoint commitment
+      description: |
+        The service validates the referenced signed checkpoint and witness
+        threshold off-chain. The chain adapter receives only the nested
+        on_chain_payload object and no surrounding request fields.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitCheckpointAnchorRequest'
+      responses:
+        '202':
+          description: Aggregate checkpoint commitment accepted
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointAnchorReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/key-transparency/checkpoint-anchors/{anchor_receipt_id}:
+    get:
+      tags: [Checkpoint anchors]
+      operationId: getCheckpointAnchorReceipt
+      summary: Read optional aggregate checkpoint-anchor status
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AnchorReceiptId'
+      responses:
+        '200':
+          description: Current checkpoint-anchor receipt
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CheckpointAnchorReceipt'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-access-token
+
+  parameters:
+    ConversationId:
+      name: conversation_id
+      in: path
+      required: true
+      description: Opaque server-issued conversation reference.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    UploadId:
+      name: upload_id
+      in: path
+      required: true
+      description: Opaque resumable-upload session reference.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    ObjectId:
+      name: object_id
+      in: path
+      required: true
+      description: Opaque identifier for client-encrypted bytes.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    ChunkIndex:
+      name: chunk_index
+      in: path
+      required: true
+      description: Zero-based index fixed by the immutable chunk plan.
+      schema:
+        type: integer
+        minimum: 0
+        maximum: 16383
+    AnchorReceiptId:
+      name: anchor_receipt_id
+      in: path
+      required: true
+      description: Opaque server-side checkpoint-anchor receipt reference.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Opaque client-generated key scoped to actor, route, domain, and canonical request.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: Quoted optimistic resource version for the upload session.
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+    ChunkDigest:
+      name: X-Ciphertext-Chunk-SHA256
+      in: header
+      required: true
+      description: Unpadded base64url SHA-256 digest of the exact ciphertext chunk bytes.
+      schema:
+        $ref: '#/components/schemas/Sha256Base64Url'
+    PageCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque continuation cursor scoped to the caller and endpoint.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    PageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Bounded page size; the service may return fewer items.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 50
+    SyncCursor:
+      name: sync_cursor
+      in: query
+      required: false
+      description: Opaque reconnect cursor scoped to the caller and conversation.
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+
+  headers:
+    RegistrationAccessToken:
+      description: >-
+        Sensitive opaque bearer credential returned only by the first
+        successful registration response and an exact bounded idempotency
+        replay. Clients must move it directly into OS secure storage. Servers
+        and clients must never log it, and the response is no-store.
+      required: true
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 512
+        pattern: '^[A-Za-z0-9_-]+$'
+        writeOnly: true
+    ResourceVersion:
+      description: Quoted optimistic resource version returned by the service.
+      schema:
+        type: string
+        pattern: '^"[0-9]+"$'
+    ChunkDigest:
+      description: Unpadded base64url SHA-256 digest of returned ciphertext bytes.
+      schema:
+        $ref: '#/components/schemas/Sha256Base64Url'
+
+  responses:
+    Unauthorized:
+      description: Missing, expired, or invalid authentication
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated member is inactive or lacks permission
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    BadRequest:
+      description: Malformed or structurally forbidden request
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource is absent or deliberately undisclosed
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Idempotency or immutable-boundary conflict
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionFailed:
+      description: Optimistic version or immutable security binding mismatch
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Declared or transmitted ciphertext exceeds the contract bound
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PolicyRejected:
+      description: Closed-homeserver policy rejected the operation
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  schemas:
+    ProductKind:
+      type: string
+      enum:
+        - PRIVACY_CONSUMER
+        - SECURE_COLLAB
+
+    SecurityMode:
+      type: string
+      const: TRUE_E2EE
+
+    SupportedLocale:
+      type: string
+      description: Korean is the default and English is fully supported.
+      enum:
+        - ko
+        - en
+
+    MemberRole:
+      type: string
+      enum:
+        - OWNER
+        - ADMIN
+        - MEMBER
+
+    Sha256Base64Url:
+      type: string
+      minLength: 43
+      maxLength: 43
+      pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+      description: Canonical unpadded base64url encoding of exactly 32 SHA-256 bytes.
+
+    HomeserverProfile:
+      oneOf:
+        - $ref: '#/components/schemas/PrivacyConsumerHomeserverProfile'
+        - $ref: '#/components/schemas/SecureCollabHomeserverProfile'
+      discriminator:
+        propertyName: product_kind
+        mapping:
+          PRIVACY_CONSUMER: '#/components/schemas/PrivacyConsumerHomeserverProfile'
+          SECURE_COLLAB: '#/components/schemas/SecureCollabHomeserverProfile'
+
+    HomeserverProfileBase:
+      type: object
+      required:
+        - server_ref
+        - display_name
+        - product_kind
+        - mode
+        - security_domain_id
+        - policy_version
+        - ownership_model
+        - network_scope
+        - federation_enabled
+        - registration_mode
+        - member_conversation_creation
+        - server_can_decrypt_message_content
+        - default_locale
+        - supported_locales
+        - encrypted_media_enabled
+        - key_transparency_enabled
+        - blockchain_checkpoint_anchoring
+      properties:
+        server_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+        product_kind:
+          $ref: '#/components/schemas/ProductKind'
+        mode:
+          $ref: '#/components/schemas/SecurityMode'
+        security_domain_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+        ownership_model:
+          const: PERSONALLY_OWNED
+        network_scope:
+          const: CLOSED_HOMESERVER
+        federation_enabled:
+          const: false
+        registration_mode:
+          const: INVITE_ONLY
+        member_conversation_creation:
+          const: ENABLED_FOR_ACTIVE_MEMBERS
+        server_can_decrypt_message_content:
+          const: false
+        default_locale:
+          const: ko
+        supported_locales:
+          type: array
+          minItems: 2
+          maxItems: 2
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/SupportedLocale'
+        encrypted_media_enabled:
+          const: true
+        key_transparency_enabled:
+          type: boolean
+          description: >-
+            True only when this deployment exposes an authenticated device-key
+            directory with checkpoint and inclusion/consistency proof support.
+            Production clients fail closed on false; the loopback reference
+            runtime reports false instead of claiming an unavailable service.
+        blockchain_checkpoint_anchoring:
+          type: string
+          enum:
+            - DISABLED
+            - AVAILABLE
+
+    PrivacyConsumerHomeserverProfile:
+      allOf:
+        - $ref: '#/components/schemas/HomeserverProfileBase'
+        - type: object
+          required:
+            - product_kind
+            - mode
+          properties:
+            product_kind:
+              const: PRIVACY_CONSUMER
+            mode:
+              const: TRUE_E2EE
+      unevaluatedProperties: false
+
+    SecureCollabHomeserverProfile:
+      allOf:
+        - $ref: '#/components/schemas/HomeserverProfileBase'
+        - type: object
+          required:
+            - product_kind
+            - mode
+          properties:
+            product_kind:
+              const: SECURE_COLLAB
+            mode:
+              const: TRUE_E2EE
+      unevaluatedProperties: false
+
+    RegisteredMember:
+      type: object
+      additionalProperties: false
+      required:
+        - member_ref
+        - display_name
+        - role
+        - status
+        - locale
+      properties:
+        member_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 80
+        avatar_object_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        role:
+          $ref: '#/components/schemas/MemberRole'
+        status:
+          const: ACTIVE
+        locale:
+          $ref: '#/components/schemas/SupportedLocale'
+      description: Excludes login identifiers, contact details, and device keys.
+
+    MemberDirectoryPage:
+      type: object
+      additionalProperties: false
+      required:
+        - members
+      properties:
+        members:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/RegisteredMember'
+        next_cursor:
+          type: string
+          minLength: 16
+          maxLength: 128
+
+    WriteBinding:
+      type: object
+      required:
+        - security_domain_id
+        - product_kind
+        - mode
+        - policy_version
+        - expected_version
+      properties:
+        security_domain_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        product_kind:
+          $ref: '#/components/schemas/ProductKind'
+        mode:
+          const: TRUE_E2EE
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+          pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+        expected_version:
+          type: integer
+          minimum: 0
+
+    CreateBinding:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          properties:
+            expected_version:
+              const: 0
+
+    CreateInvitationRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - assigned_role
+            - expires_in_seconds
+            - maximum_uses
+          properties:
+            assigned_role:
+              type: string
+              enum: [ADMIN, MEMBER]
+            expires_in_seconds:
+              type: integer
+              minimum: 300
+              maximum: 604800
+            maximum_uses:
+              const: 1
+      unevaluatedProperties: false
+
+    InvitationReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - invitation_ref
+        - invitation_secret
+        - expires_at
+        - maximum_uses
+      properties:
+        invitation_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        invitation_secret:
+          type: string
+          minLength: 43
+          maxLength: 512
+          readOnly: true
+          description: >-
+            At least 256 CSPRNG bits, returned only by the first successful
+            response and an exact bounded idempotency replay; never logged.
+        expires_at:
+          type: string
+          format: date-time
+        maximum_uses:
+          const: 1
+
+    AcceptInvitationRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateBinding'
+        - type: object
+          required:
+            - invitation_secret
+            - display_name
+            - locale
+            - device_public_keys
+            - client_nonce
+            - proof_of_possession
+          properties:
+            invitation_secret:
+              type: string
+              minLength: 43
+              maxLength: 512
+              writeOnly: true
+            display_name:
+              type: string
+              minLength: 1
+              maxLength: 80
+            locale:
+              $ref: '#/components/schemas/SupportedLocale'
+            device_public_keys:
+              $ref: '#/components/schemas/DevicePublicKeys'
+            client_nonce:
+              type: string
+              minLength: 43
+              maxLength: 43
+              pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+              description: Canonical unpadded base64url encoding of 32 random bytes.
+            proof_of_possession:
+              type: string
+              minLength: 86
+              maxLength: 86
+              pattern: '^[A-Za-z0-9_-]{85}[AEIMQUYcgkosw048]$'
+              writeOnly: true
+              description: >-
+                Canonical unpadded base64url Ed25519 64-byte signature over the
+                canonical length-prefixed
+                private-homeserver/device-registration-proof/v1 transcript.
+                The transcript binds server_ref, security_domain_id,
+                policy_version, product_kind, invitation_ref, SHA-256 of the
+                invitation secret, assigned role, display name, locale, every
+                DevicePublicKeys field, and client_nonce in that order.
+      unevaluatedProperties: false
+
+    DevicePublicKeys:
+      type: object
+      additionalProperties: false
+      required:
+        - device_ref
+        - signing_algorithm
+        - signing_public_key
+        - agreement_algorithm
+        - agreement_public_key
+      properties:
+        device_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        signing_algorithm:
+          const: ED25519
+        signing_public_key:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+          description: Canonical unpadded base64url encoding of 32 Ed25519 public-key bytes.
+        agreement_algorithm:
+          const: X25519
+        agreement_public_key:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+          description: Canonical unpadded base64url encoding of 32 X25519 public-key bytes.
+
+    RegistrationReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - member_ref
+        - status
+        - registered_at
+      properties:
+        member_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        status:
+          const: ACTIVE
+        registered_at:
+          type: string
+          format: date-time
+
+    CreateConversationRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateBinding'
+        - type: object
+          required:
+            - conversation_kind
+            - member_refs
+          properties:
+            conversation_kind:
+              type: string
+              enum: [DIRECT, GROUP]
+            member_refs:
+              type: array
+              minItems: 1
+              maxItems: 511
+              uniqueItems: true
+              items:
+                type: string
+                minLength: 16
+                maxLength: 128
+            display_label:
+              type: string
+              minLength: 1
+              maxLength: 160
+          oneOf:
+            - properties:
+                conversation_kind:
+                  const: DIRECT
+                member_refs:
+                  minItems: 1
+                  maxItems: 1
+            - properties:
+                conversation_kind:
+                  const: GROUP
+                member_refs:
+                  minItems: 2
+                  maxItems: 511
+      unevaluatedProperties: false
+
+    ConversationRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - conversation_id
+        - conversation_kind
+        - security_domain_id
+        - product_kind
+        - mode
+        - policy_version
+        - member_refs
+        - resource_version
+        - created_at
+      properties:
+        conversation_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        conversation_kind:
+          type: string
+          enum: [DIRECT, GROUP]
+        security_domain_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        product_kind:
+          $ref: '#/components/schemas/ProductKind'
+        mode:
+          const: TRUE_E2EE
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        display_label:
+          type: string
+          minLength: 1
+          maxLength: 160
+        member_refs:
+          type: array
+          minItems: 2
+          maxItems: 512
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 16
+            maxLength: 128
+        resource_version:
+          type: integer
+          minimum: 1
+        created_at:
+          type: string
+          format: date-time
+
+    ConversationPage:
+      type: object
+      additionalProperties: false
+      required:
+        - conversations
+      properties:
+        conversations:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/ConversationRecord'
+        next_cursor:
+          type: string
+          minLength: 16
+          maxLength: 128
+
+    UpdateConversationRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - mutation
+          properties:
+            mutation:
+              $ref: '#/components/schemas/ConversationMutation'
+      unevaluatedProperties: false
+
+    ConversationMutation:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        display_label:
+          type: string
+          minLength: 1
+          maxLength: 160
+        add_member_refs:
+          type: array
+          maxItems: 511
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 16
+            maxLength: 128
+        remove_member_refs:
+          type: array
+          maxItems: 511
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 16
+            maxLength: 128
+        archived:
+          type: boolean
+      description: Added members must already be ACTIVE on the same closed homeserver and domain.
+
+    MessageCipherSuite:
+      type: string
+      enum:
+        - MLS_1_0
+        - SIGNAL_DOUBLE_RATCHET
+
+    AppendMessageRequest:
+      allOf:
+        - $ref: '#/components/schemas/TrueE2eeMessageEnvelope'
+      unevaluatedProperties: false
+
+    TrueE2eeMessageEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - client_message_id
+            - sent_at
+            - sender_device_ref
+            - cipher_suite
+            - key_epoch
+            - ciphertext
+            - nonce
+            - authentication_tag
+          properties:
+            client_message_id:
+              type: string
+              minLength: 16
+              maxLength: 128
+            sent_at:
+              type: string
+              format: date-time
+            sender_device_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+            cipher_suite:
+              $ref: '#/components/schemas/MessageCipherSuite'
+            key_epoch:
+              type: integer
+              minimum: 0
+              maximum: 9007199254740991
+            ciphertext:
+              type: string
+              minLength: 2
+              maxLength: 1398102
+              pattern: '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2}|[A-Za-z0-9_-]{3})?$'
+              description: |
+                Unpadded base64url authenticated ciphertext capped at one MiB
+                decoded. Any media object reference, filename, MIME type,
+                content key, and base nonce are encrypted inside this value.
+            nonce:
+              type: string
+              minLength: 16
+              maxLength: 64
+              pattern: '^[A-Za-z0-9_-]+$'
+            authentication_tag:
+              type: string
+              minLength: 22
+              maxLength: 128
+              pattern: '^[A-Za-z0-9_-]+$'
+
+    SynchronizedEncryptedMessage:
+      allOf:
+        - $ref: '#/components/schemas/TrueE2eeMessageEnvelope'
+        - type: object
+          required:
+            - server_event_id
+            - conversation_sequence
+          properties:
+            server_event_id:
+              type: string
+              minLength: 16
+              maxLength: 128
+              description: Stable server-assigned identifier used for duplicate suppression.
+            conversation_sequence:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+              description: Stable one-based ordering position within this conversation.
+      unevaluatedProperties: false
+
+    EncryptedMessagePage:
+      type: object
+      additionalProperties: false
+      required:
+        - messages
+        - next_sync_cursor
+        - has_more
+      properties:
+        messages:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/SynchronizedEncryptedMessage'
+        next_sync_cursor:
+          type: string
+          minLength: 16
+          maxLength: 128
+        has_more:
+          type: boolean
+          description: True when another ordered page exists after this cursor.
+
+    OpaqueWakeupRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - notification_class
+            - route_registration_ref
+            - opaque_wake_token
+            - expires_at
+          properties:
+            notification_class:
+              const: WAKE_UP
+            route_registration_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+              description: Internal opaque push-route reference, not a chat identifier.
+            opaque_wake_token:
+              type: string
+              minLength: 43
+              maxLength: 512
+              description: Short-lived random value with no decodable application fields.
+            expires_at:
+              type: string
+              format: date-time
+      unevaluatedProperties: false
+
+    MediaChunkPlan:
+      type: object
+      additionalProperties: false
+      required:
+        - chunk_size_bytes
+        - chunk_count
+        - digest_algorithm
+      properties:
+        chunk_size_bytes:
+          type: integer
+          minimum: 65536
+          maximum: 4194304
+          description: Nominal ciphertext chunk bytes, including its authentication tag.
+        chunk_count:
+          type: integer
+          minimum: 1
+          maximum: 16384
+        digest_algorithm:
+          const: SHA_256
+      description: |
+        The declared chunks must exactly cover ciphertext_size_bytes. Every
+        chunk except the last has chunk_size_bytes bytes; the final chunk has
+        between one and chunk_size_bytes bytes. All sizes count ciphertext
+        bytes after encryption, including per-chunk authentication tags.
+
+    InitiateEncryptedMediaUploadRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateBinding'
+        - type: object
+          required:
+            - conversation_id
+            - ciphertext_size_bytes
+            - chunk_plan
+            - ciphertext_digest
+            - chunk_digests
+          properties:
+            conversation_id:
+              type: string
+              minLength: 16
+              maxLength: 128
+              description: Conversation whose ACTIVE members may access this ciphertext object.
+            ciphertext_size_bytes:
+              type: integer
+              minimum: 1
+              maximum: 1073741824
+              description: Total ciphertext bytes including all authentication tags.
+            chunk_plan:
+              $ref: '#/components/schemas/MediaChunkPlan'
+            ciphertext_digest:
+              $ref: '#/components/schemas/Sha256Base64Url'
+            chunk_digests:
+              type: array
+              minItems: 1
+              maxItems: 16384
+              items:
+                $ref: '#/components/schemas/Sha256Base64Url'
+              description: Ordered list with exactly chunk_plan.chunk_count digests.
+      unevaluatedProperties: false
+
+    EncryptedMediaDescriptor:
+      type: object
+      additionalProperties: false
+      required:
+        - ciphertext_object_id
+        - conversation_id
+        - ciphertext_size_bytes
+        - chunk_plan
+        - ciphertext_digest
+        - chunk_digests
+      properties:
+        ciphertext_object_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+          description: Opaque server-issued identifier for encrypted bytes.
+        conversation_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+          description: Immutable authorization boundary for upload and download.
+        ciphertext_size_bytes:
+          type: integer
+          minimum: 1
+          maximum: 1073741824
+          description: Total ciphertext bytes including all authentication tags.
+        chunk_plan:
+          $ref: '#/components/schemas/MediaChunkPlan'
+        ciphertext_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        chunk_digests:
+          type: array
+          minItems: 1
+          maxItems: 16384
+          items:
+            $ref: '#/components/schemas/Sha256Base64Url'
+      description: |
+        Server-visible descriptor for encrypted bytes only, immutably bound to
+        one conversation. Object identifiers never grant authority. Chunk count
+        and ordered digest count must match and the plan must exactly cover the
+        declared ciphertext size. Plaintext media metadata is excluded.
+
+    EncryptedMediaUploadSession:
+      type: object
+      additionalProperties: false
+      required:
+        - upload_id
+        - descriptor
+        - resource_version
+        - expires_at
+      properties:
+        upload_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        descriptor:
+          $ref: '#/components/schemas/EncryptedMediaDescriptor'
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        expires_at:
+          type: string
+          format: date-time
+
+    ReceivedEncryptedMediaChunk:
+      type: object
+      additionalProperties: false
+      required:
+        - chunk_index
+        - ciphertext_size_bytes
+        - ciphertext_digest
+      properties:
+        chunk_index:
+          type: integer
+          minimum: 0
+          maximum: 16383
+        ciphertext_size_bytes:
+          type: integer
+          minimum: 1
+          maximum: 4194304
+        ciphertext_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+
+    EncryptedMediaUploadStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - upload_id
+        - descriptor
+        - state
+        - received_chunks
+        - resource_version
+        - expires_at
+      properties:
+        upload_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        descriptor:
+          $ref: '#/components/schemas/EncryptedMediaDescriptor'
+        state:
+          type: string
+          enum:
+            - ACTIVE
+            - VERIFYING
+            - COMPLETE
+        received_chunks:
+          type: array
+          maxItems: 16384
+          items:
+            $ref: '#/components/schemas/ReceivedEncryptedMediaChunk'
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        expires_at:
+          type: string
+          format: date-time
+
+    CompleteEncryptedMediaUploadRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - completion_intent
+          properties:
+            completion_intent:
+              const: COMPLETE
+      unevaluatedProperties: false
+
+    EncryptedMediaManifest:
+      type: object
+      additionalProperties: false
+      required:
+        - descriptor
+        - completed_at
+      properties:
+        descriptor:
+          $ref: '#/components/schemas/EncryptedMediaDescriptor'
+        completed_at:
+          type: string
+          format: date-time
+      description: Authenticated descriptor response with no public or presigned URL.
+
+    EncryptedMediaChunkBytes:
+      type: string
+      format: binary
+      minLength: 1
+      maxLength: 4194304
+      description: |
+        One bounded ciphertext chunk including its authentication tag; never
+        plaintext media bytes.
+
+    SignatureAlgorithm:
+      type: string
+      enum:
+        - ED25519
+        - ECDSA_P256_SHA256
+
+    DetachedSignature:
+      type: object
+      additionalProperties: false
+      required:
+        - algorithm
+        - signer_key_id
+        - signature
+      properties:
+        algorithm:
+          $ref: '#/components/schemas/SignatureAlgorithm'
+        signer_key_id:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        signature:
+          type: string
+          minLength: 43
+          maxLength: 21848
+          pattern: '^[A-Za-z0-9_-]+$'
+          description: Unpadded base64url detached signature bytes.
+
+    KeyTransparencyCheckpoint:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_domain
+        - hash_algorithm
+        - log_id_commitment
+        - tree_size
+        - root_hash
+        - batch_sequence
+        - batch_first_leaf_index
+        - batch_entry_count
+        - batch_digest
+        - issued_at
+        - checkpoint_digest
+      properties:
+        protocol_domain:
+          const: SELF_HOSTED_CHAT_KT_V1
+        hash_algorithm:
+          const: SHA_256
+        log_id_commitment:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        batch_sequence:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        batch_first_leaf_index:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        batch_entry_count:
+          type: integer
+          minimum: 1
+          maximum: 16384
+        batch_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        issued_at:
+          type: string
+          format: date-time
+        previous_checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+      description: Aggregate append-only log metadata without a raw identity or per-user leaf.
+
+    KeyTransparencyWitnessReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - checkpoint_digest
+        - tree_size
+        - root_hash
+        - previous_tree_size
+        - previous_root_hash
+        - observed_at
+        - signature
+      properties:
+        checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        previous_tree_size:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        previous_root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        observed_at:
+          type: string
+          format: date-time
+        signature:
+          $ref: '#/components/schemas/DetachedSignature'
+      description: Independently signed statement that binds one checkpoint to a prior observed root.
+
+    SignedKeyTransparencyCheckpoint:
+      type: object
+      additionalProperties: false
+      required:
+        - checkpoint
+        - operator_signature
+        - witness_threshold
+        - witness_receipts
+      properties:
+        checkpoint:
+          $ref: '#/components/schemas/KeyTransparencyCheckpoint'
+        operator_signature:
+          $ref: '#/components/schemas/DetachedSignature'
+        witness_threshold:
+          type: integer
+          minimum: 1
+          maximum: 32
+        witness_receipts:
+          type: array
+          minItems: 1
+          maxItems: 32
+          items:
+            $ref: '#/components/schemas/KeyTransparencyWitnessReceipt'
+      description: Clients reject invalid, duplicate, untrusted, or below-threshold witness signatures.
+
+    KeyTransparencyInclusionProofRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - checkpoint_digest
+        - tree_size
+        - leaf_index
+      properties:
+        checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        leaf_index:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740990
+
+    KeyTransparencyInclusionProof:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_domain
+        - hash_algorithm
+        - checkpoint_digest
+        - tree_size
+        - root_hash
+        - leaf_index
+        - proof_hashes
+      properties:
+        protocol_domain:
+          const: SELF_HOSTED_CHAT_KT_V1
+        hash_algorithm:
+          const: SHA_256
+        checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        leaf_index:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740990
+        proof_hashes:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/Sha256Base64Url'
+      description: The leaf itself is excluded; verification uses a client-held opaque commitment.
+
+    KeyTransparencyConsistencyProofRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - previous_checkpoint_digest
+        - previous_tree_size
+        - current_checkpoint_digest
+        - current_tree_size
+      properties:
+        previous_checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        previous_tree_size:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        current_checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        current_tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+
+    KeyTransparencyConsistencyProof:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_domain
+        - hash_algorithm
+        - previous_checkpoint_digest
+        - previous_tree_size
+        - previous_root_hash
+        - current_checkpoint_digest
+        - current_tree_size
+        - current_root_hash
+        - proof_hashes
+      properties:
+        protocol_domain:
+          const: SELF_HOSTED_CHAT_KT_V1
+        hash_algorithm:
+          const: SHA_256
+        previous_checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        previous_tree_size:
+          type: integer
+          minimum: 0
+          maximum: 9007199254740991
+        previous_root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        current_checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        current_tree_size:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        current_root_hash:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        proof_hashes:
+          type: array
+          maxItems: 64
+          items:
+            $ref: '#/components/schemas/Sha256Base64Url'
+      description: previous_tree_size must not exceed current_tree_size.
+
+    BlockchainCheckpointAnchorPayload:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - protocol_domain
+        - aggregate_checkpoint_commitment
+      properties:
+        schema_version:
+          const: 2
+        protocol_domain:
+          const: key-transparency/blockchain-anchor/v2
+        aggregate_checkpoint_commitment:
+          $ref: '#/components/schemas/Sha256Base64Url'
+      description: |
+        Complete and exclusive application payload passed to the optional public
+        chain adapter. The aggregate commitment binds the off-chain checkpoint,
+        operator signature, accepted witness set, and tree size without exposing
+        them or publishing a linkable growth counter.
+
+    SubmitCheckpointAnchorRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - checkpoint_digest
+            - on_chain_payload
+          properties:
+            checkpoint_digest:
+              $ref: '#/components/schemas/Sha256Base64Url'
+            on_chain_payload:
+              $ref: '#/components/schemas/BlockchainCheckpointAnchorPayload'
+      unevaluatedProperties: false
+
+    CheckpointAnchorReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - anchor_receipt_id
+        - checkpoint_digest
+        - on_chain_payload
+        - state
+        - resource_version
+        - submitted_at
+      properties:
+        anchor_receipt_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        checkpoint_digest:
+          $ref: '#/components/schemas/Sha256Base64Url'
+        on_chain_payload:
+          $ref: '#/components/schemas/BlockchainCheckpointAnchorPayload'
+        state:
+          type: string
+          enum:
+            - QUEUED
+            - SUBMITTED
+            - CONFIRMED
+            - FAILED
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        submitted_at:
+          type: string
+          format: date-time
+        confirmed_at:
+          type: string
+          format: date-time
+        chain_id:
+          type: string
+          minLength: 1
+          maxLength: 128
+        transaction_reference:
+          type: string
+          minLength: 1
+          maxLength: 512
+      description: Server-side status metadata; only on_chain_payload is submitted publicly.
+
+    WriteReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - receipt_ref
+        - resource_version
+        - accepted_at
+      properties:
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+
+    MessageWriteReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - receipt_ref
+        - server_event_id
+        - conversation_sequence
+        - resource_version
+        - accepted_at
+      properties:
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        server_event_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+          description: Stable across an exact idempotent replay.
+        conversation_sequence:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+          description: Stable across an exact idempotent replay.
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+
+    ConversationCreatedReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - conversation_id
+        - receipt_ref
+        - resource_version
+        - accepted_at
+      properties:
+        conversation_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+
+    ErrorCode:
+      type: string
+      enum:
+        - INVALID_REQUEST
+        - SECURITY_DOMAIN_MISMATCH
+        - PRODUCT_KIND_MISMATCH
+        - SECURITY_MODE_MISMATCH
+        - SECURITY_MODE_IMMUTABLE
+        - CROSS_DOMAIN_FORBIDDEN
+        - CROSS_HOMESERVER_FORBIDDEN
+        - FEDERATION_FORBIDDEN
+        - POLICY_VERSION_STALE
+        - OPTIMISTIC_LOCK_CONFLICT
+        - IDEMPOTENCY_KEY_REUSED
+        - ENCRYPTED_PAYLOAD_REQUIRED
+        - PLAINTEXT_FORBIDDEN
+        - MEDIA_DESCRIPTOR_INVALID
+        - MEDIA_CHUNK_OUT_OF_RANGE
+        - MEDIA_DIGEST_MISMATCH
+        - MEDIA_UPLOAD_INCOMPLETE
+        - PUSH_PAYLOAD_NOT_OPAQUE
+        - KEY_TRANSPARENCY_PROOF_INVALID
+        - KEY_TRANSPARENCY_CHECKPOINT_STALE
+        - CHECKPOINT_ANCHOR_PAYLOAD_FORBIDDEN
+        - AUTHORIZATION_DENIED
+        - MEMBER_NOT_REGISTERED
+        - MEMBER_NOT_ACTIVE
+        - MEMBER_NOT_IN_HOMESERVER
+        - DIRECT_PEER_COUNT_INVALID
+        - DIRECT_CONVERSATION_EXISTS
+        - GROUP_PEER_COUNT_INVALID
+        - INVITATION_EXPIRED
+        - INVITATION_REVOKED
+        - INVITATION_ALREADY_CONSUMED
+
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - code
+        - correlation_ref
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+          maxLength: 160
+        status:
+          type: integer
+          minimum: 400
+          maximum: 599
+        code:
+          $ref: '#/components/schemas/ErrorCode'
+        correlation_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        retryable:
+          type: boolean
+      description: Error details never echo message data, key material, identifiers, or request bodies.

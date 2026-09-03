@@ -1,0 +1,8 @@
+arb-dir: lib/l10n
+template-arb-file: app_ko.arb
+output-localization-file: everyday_localizations.dart
+output-class: EverydayLocalizations
+nullable-getter: false
+preferred-supported-locales:
+  - ko
+  - en

@@ -1,0 +1,21 @@
+name: chat_media_picker
+description: Native cross-platform file selection adapter for chat media.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+  flutter: ">=3.35.0"
+
+resolution: workspace
+
+dependencies:
+  flutter:
+    sdk: flutter
+  chat_media: ^0.1.0
+  file_selector: ^1.1.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
