@@ -106,7 +106,9 @@ function Get-ControlledManifestFiles {
             if (-not (Test-Path -LiteralPath $candidatePath -PathType Leaf)) {
                 continue
             }
-            $candidate = Get-Item -LiteralPath $candidatePath
+            # PowerShell marks Unix dotfiles as Hidden. Test-Path can see them,
+            # while Get-Item without -Force may still fail on hosted Linux CI.
+            $candidate = Get-Item -LiteralPath $candidatePath -Force
             if ($wantedNames.Contains($candidate.Name)) {
                 $files.Add($candidate)
             }
