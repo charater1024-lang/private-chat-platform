@@ -549,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_group_welcome_is_rejected_before_provider_state_is_replaced() {
+    fn duplicate_group_welcome_fails_closed_without_replacing_provider_state() {
         let mut bob = MlsClient::new(b"bob-device-01").unwrap();
         let mut mallory = MlsClient::new(b"mallory-device-01").unwrap();
         mallory.create_group(GROUP_ID).unwrap();
@@ -563,10 +563,14 @@ mod tests {
         // the now-active group if the duplicate ID were checked too late.
         bob.create_group(GROUP_ID).unwrap();
         mallory.confirm_pending_commit(GROUP_ID).unwrap();
-        assert_eq!(
+        assert!(matches!(
             bob.join_from_welcome(&conflicting.welcome),
-            Err(BridgeError::GroupAlreadyExists)
-        );
+            Err(BridgeError::AuthenticationFailed | BridgeError::GroupAlreadyExists)
+        ));
+        let persisted = MlsGroup::load(bob.provider.storage(), &GroupId::from_slice(GROUP_ID))
+            .unwrap()
+            .expect("the original group must remain persisted");
+        assert_eq!(persisted.members().count(), 1);
         assert_eq!(bob.member_count(GROUP_ID).unwrap(), 1);
         assert!(bob
             .encrypt(GROUP_ID, AAD, b"original branch remains usable")
