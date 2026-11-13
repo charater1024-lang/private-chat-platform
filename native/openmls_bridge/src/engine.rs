@@ -593,10 +593,10 @@ mod tests {
         assert_eq!(bob.process_incoming(GROUP_ID, &prepared.commit), Ok(None));
 
         let dave = MlsClient::new(b"dave-device-01").unwrap();
-        assert_eq!(
+        assert!(matches!(
             bob.prepare_add_member(GROUP_ID, &dave.generate_key_package().unwrap()),
             Err(BridgeError::GroupStateConflict)
-        );
+        ));
         assert_eq!(bob.member_count(GROUP_ID).unwrap(), 2);
 
         // The rejected outbound operation must not consume the staged commit.
