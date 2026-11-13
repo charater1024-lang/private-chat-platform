@@ -203,7 +203,10 @@ impl MlsClient {
         }
         let wire = MlsMessageIn::tls_deserialize_exact(welcome_bytes)
             .map_err(|_| BridgeError::InvalidInput)?;
-        let welcome = wire.into_welcome().ok_or(BridgeError::InvalidInput)?;
+        let welcome = match wire.extract() {
+            MlsMessageBodyIn::Welcome(welcome) => welcome,
+            _ => return Err(BridgeError::InvalidInput),
+        };
         let staged =
             StagedWelcome::new_from_welcome(&self.provider, &group_join_config(), welcome, None)
                 .map_err(|_| BridgeError::AuthenticationFailed)?;
