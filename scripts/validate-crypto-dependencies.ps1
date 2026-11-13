@@ -542,6 +542,7 @@ function Get-CargoLockPackagesFromContent {
         $name = $null
         $version = $null
         $source = $null
+        $checksum = $null
 
         if ($body -match '(?m)^name\s*=\s*"(?<value>[^"]+)"\s*$') {
             $name = $Matches['value']
@@ -552,11 +553,15 @@ function Get-CargoLockPackagesFromContent {
         if ($body -match '(?m)^source\s*=\s*"(?<value>[^"]+)"\s*$') {
             $source = $Matches['value']
         }
+        if ($body -match '(?m)^checksum\s*=\s*"(?<value>[0-9a-fA-F]{64})"\s*$') {
+            $checksum = $Matches['value']
+        }
 
         $result.Add([pscustomobject]@{
             Name    = $name
             Version = $version
             Source  = $source
+            Checksum = $checksum
         })
     }
 
@@ -683,15 +688,125 @@ foreach ($file in $pubLockFiles) {
 }
 
 foreach ($file in $cargoManifestFiles) {
-    Add-PolicyViolation `
-        -Path $file.FullName `
-        -Message 'Rust dependencies are fail-closed until the app-owned MLS bridge has cargo metadata, source provenance, licence, advisory, and native artifact verification.'
+    $relativePath = (Get-RelativeWorkspacePath -Path $file.FullName).Replace('\', '/')
+    if ($relativePath -ne 'native/openmls_bridge/Cargo.toml') {
+        Add-PolicyViolation `
+            -Path $file.FullName `
+            -Message 'Only the reviewed app-owned native/openmls_bridge Cargo manifest is permitted.'
+        continue
+    }
+
+    $content = Get-Content -LiteralPath $file.FullName -Raw
+    $package = Get-CargoPackageIdentityFromContent -Content $content
+    if ($package.Name -ne 'privacy_chat_openmls_bridge' -or $package.Version -ne '0.1.0') {
+        Add-PolicyViolation -Path $file.FullName -Message 'Unexpected native bridge package identity.'
+    }
+    if ($content -notmatch '(?m)^rust-version\s*=\s*"1\.91"\s*$') {
+        Add-PolicyViolation -Path $file.FullName -Message 'The reviewed bridge must require Rust 1.91.'
+    }
+    if ($content -notmatch '(?m)^license\s*=\s*"Apache-2\.0"\s*$') {
+        Add-PolicyViolation -Path $file.FullName -Message 'The reviewed bridge licence declaration is missing or changed.'
+    }
+    if ($content -notmatch '(?m)^publish\s*=\s*false\s*$') {
+        Add-PolicyViolation -Path $file.FullName -Message 'The native bridge must remain non-publishable.'
+    }
+
+    $expectedVersions = @{
+        openmls                 = '=0.9.2'
+        openmls_basic_credential = '=0.6.0'
+        openmls_rust_crypto     = '=0.6.0'
+        openmls_traits          = '=0.6.0'
+        tls_codec               = '=0.5.0'
+        thiserror               = '=2.0.17'
+        zeroize                 = '=1.9.1'
+    }
+    $seenExpected = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($dependency in Get-CargoDependenciesFromContent -Content $content) {
+        if (Test-IsBlockedCargoRoute -Name $dependency.PackageName) {
+            Add-PolicyViolation `
+                -Path $file.FullName `
+                -Message "line $($dependency.LineNumber): '$($dependency.PackageName)' is an unapproved crypto route."
+        }
+        foreach ($forbiddenField in @('git', 'tag', 'rev', 'branch', 'path', 'workspace')) {
+            if ($dependency.Fields.ContainsKey($forbiddenField)) {
+                Add-PolicyViolation `
+                    -Path $file.FullName `
+                    -Message "line $($dependency.LineNumber): dependency '$($dependency.PackageName)' may not use '$forbiddenField'."
+            }
+        }
+        if (-not $dependency.Fields.ContainsKey('version') -or
+            -not (Test-OpenMlsVersionIsExactlyPinned -Version ([string] $dependency.Fields['version']))) {
+            Add-PolicyViolation `
+                -Path $file.FullName `
+                -Message "line $($dependency.LineNumber): dependency '$($dependency.PackageName)' must use an exact =x.y.z registry version."
+            continue
+        }
+
+        $normalizedName = ConvertTo-NormalizedPackageName -Name $dependency.PackageName
+        if (-not $expectedVersions.ContainsKey($normalizedName)) {
+            Add-PolicyViolation `
+                -Path $file.FullName `
+                -Message "line $($dependency.LineNumber): unreviewed Rust dependency '$($dependency.PackageName)'."
+            continue
+        }
+        [void] $seenExpected.Add($normalizedName)
+        if ([string] $dependency.Fields['version'] -ne $expectedVersions[$normalizedName]) {
+            Add-PolicyViolation `
+                -Path $file.FullName `
+                -Message "line $($dependency.LineNumber): '$normalizedName' must remain pinned to $($expectedVersions[$normalizedName])."
+        }
+    }
+    foreach ($expectedName in $expectedVersions.Keys) {
+        if (-not $seenExpected.Contains($expectedName)) {
+            Add-PolicyViolation -Path $file.FullName -Message "Required reviewed dependency '$expectedName' is missing."
+        }
+    }
+    if (-not (Test-ManifestHasCargoLock -ManifestPath $file.FullName)) {
+        Add-PolicyViolation -Path $file.FullName -Message 'The reviewed native manifest requires a colocated Cargo.lock.'
+    }
 }
 
 foreach ($file in $cargoLockFiles) {
-    Add-PolicyViolation `
-        -Path $file.FullName `
-        -Message 'Rust lockfiles are not accepted before the reviewed MLS bridge ingestion workflow exists.'
+    $relativePath = (Get-RelativeWorkspacePath -Path $file.FullName).Replace('\', '/')
+    if ($relativePath -ne 'native/openmls_bridge/Cargo.lock') {
+        Add-PolicyViolation -Path $file.FullName -Message 'Unexpected Cargo lockfile outside the reviewed native bridge.'
+        continue
+    }
+
+    $content = Get-Content -LiteralPath $file.FullName -Raw
+    if ($content -notmatch '(?m)^version\s*=\s*4\s*$') {
+        Add-PolicyViolation -Path $file.FullName -Message 'Cargo.lock must use lock format version 4.'
+    }
+    $packages = @(Get-CargoLockPackagesFromContent -Content $content)
+    foreach ($package in $packages) {
+        if ($null -ne $package.Source -and $package.Source.StartsWith('git+', [System.StringComparison]::OrdinalIgnoreCase)) {
+            Add-PolicyViolation -Path $file.FullName -Message "Git-sourced lock entry '$($package.Name)' is forbidden."
+        }
+        if ($null -ne $package.Source -and
+            $package.Source.StartsWith('registry+', [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::IsNullOrWhiteSpace($package.Checksum)) {
+            Add-PolicyViolation -Path $file.FullName -Message "Registry package '$($package.Name)' has no SHA-256 checksum."
+        }
+    }
+
+    $expectedLockedVersions = @{
+        openmls                  = '0.9.2'
+        openmls_basic_credential = '0.6.0'
+        openmls_rust_crypto      = '0.6.0'
+        openmls_traits           = '0.6.0'
+        tls_codec                = '0.5.0'
+    }
+    foreach ($expectedName in $expectedLockedVersions.Keys) {
+        $matches = @($packages | Where-Object { $_.Name -eq $expectedName })
+        if ($matches.Count -ne 1 -or $matches[0].Version -ne $expectedLockedVersions[$expectedName] -or
+            $matches[0].Source -ne 'registry+https://github.com/rust-lang/crates.io-index') {
+            Add-PolicyViolation `
+                -Path $file.FullName `
+                -Message "Lock entry '$expectedName' must resolve once to registry version $($expectedLockedVersions[$expectedName])."
+        }
+    }
 }
 
 foreach ($file in $cargoConfigFiles) {

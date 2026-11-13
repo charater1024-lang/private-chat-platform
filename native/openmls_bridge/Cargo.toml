@@ -1,0 +1,25 @@
+[package]
+name = "privacy_chat_openmls_bridge"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+publish = false
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openmls = "=0.9.2"
+openmls_basic_credential = "=0.6.0"
+openmls_rust_crypto = "=0.6.0"
+openmls_traits = "=0.6.0"
+tls_codec = "=0.5.0"
+thiserror = "=2.0.17"
+zeroize = "=1.9.1"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = "symbols"

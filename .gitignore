@@ -5,6 +5,7 @@
 flutter_*.log
 .packages
 build/
+target/
 coverage/
 pubspec_overrides.yaml
 
