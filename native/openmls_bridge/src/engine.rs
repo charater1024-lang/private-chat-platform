@@ -550,36 +550,27 @@ mod tests {
 
     #[test]
     fn duplicate_group_welcome_is_rejected_before_provider_state_is_replaced() {
-        let mut alice = MlsClient::new(b"alice-device-01").unwrap();
         let mut bob = MlsClient::new(b"bob-device-01").unwrap();
-        alice.create_group(GROUP_ID).unwrap();
-        let first = alice
-            .prepare_add_member(GROUP_ID, &bob.generate_key_package().unwrap())
-            .unwrap();
-        alice.confirm_pending_commit(GROUP_ID).unwrap();
-        assert_eq!(bob.join_from_welcome(&first.welcome).unwrap(), GROUP_ID);
-
-        // A different valid group can deliberately reuse the public group id.
-        // Joining it must not persist over Bob's already active group state.
         let mut mallory = MlsClient::new(b"mallory-device-01").unwrap();
         mallory.create_group(GROUP_ID).unwrap();
         let conflicting = mallory
             .prepare_add_member(GROUP_ID, &bob.generate_key_package().unwrap())
             .unwrap();
+
+        // The recipient can create an unrelated local group after publishing
+        // its KeyPackage but before receiving the Welcome. Staging still has
+        // valid private init material, while `into_group` would persist over
+        // the now-active group if the duplicate ID were checked too late.
+        bob.create_group(GROUP_ID).unwrap();
         mallory.confirm_pending_commit(GROUP_ID).unwrap();
         assert_eq!(
             bob.join_from_welcome(&conflicting.welcome),
             Err(BridgeError::GroupAlreadyExists)
         );
-
-        let wire = alice
+        assert_eq!(bob.member_count(GROUP_ID).unwrap(), 1);
+        assert!(bob
             .encrypt(GROUP_ID, AAD, b"original branch remains usable")
-            .unwrap();
-        let opened = bob
-            .process_incoming(GROUP_ID, &wire)
-            .unwrap()
-            .expect("application message");
-        assert_eq!(opened.plaintext, b"original branch remains usable");
+            .is_ok());
     }
 
     #[test]
