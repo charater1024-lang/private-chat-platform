@@ -1,0 +1,54 @@
+name: Blockchain checkpoint contract gate
+
+on:
+  push:
+    paths:
+      - '.github/workflows/blockchain-contract.yml'
+      - 'contracts/blockchain/**'
+      - 'scripts/validate-blockchain-contract.ps1'
+  pull_request:
+    paths:
+      - '.github/workflows/blockchain-contract.yml'
+      - 'contracts/blockchain/**'
+      - 'scripts/validate-blockchain-contract.ps1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: blockchain-contract-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    name: Solidity 0.8.38 / Windows
+    runs-on: windows-2025
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository without credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download and authenticate the pinned official compiler
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $compiler = Join-Path $env:RUNNER_TEMP 'solc-0.8.38.exe'
+          $uri = 'https://binaries.soliditylang.org/windows-amd64/solc-windows-amd64-v0.8.38+commit.1835d247.exe'
+          Invoke-WebRequest -Uri $uri -OutFile $compiler
+          $actual = (Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash.ToLowerInvariant()
+          $expected = '3fb6699791d7eb9d8cb28168116cc9b5eca9f2bec1ec356f7d66034d91035e9b'
+          if ($actual -cne $expected) {
+            throw "Official Solidity compiler checksum mismatch: $actual"
+          }
+          "SOLC_PATH=$compiler" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Compile and enforce the privacy-minimal ABI
+        shell: pwsh
+        run: ./scripts/validate-blockchain-contract.ps1 -CompilerPath $env:SOLC_PATH
+
+      - name: Reject tracked source changes
+        run: git diff --exit-code

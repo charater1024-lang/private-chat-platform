@@ -1,5 +1,9 @@
 # chat_sync
 
+`EncryptedFileSyncSnapshotStore` is the fail-closed durable adapter. It requires
+an OS-protected key provider, rollback-resistant generation anchor and verified
+private directory; it has no plaintext or adjacent key-file fallback.
+
 Pure-Dart durable synchronization for opaque, already-encrypted chat
 envelopes. The package is shared by the consumer and collaboration clients.
 
@@ -31,6 +35,13 @@ If a process stops in `sending`, `ChatSyncEngine.restore` returns the entry to
 key and return the original receipt for an exact retry. This covers both
 request loss and the harder case where the server committed but its ACK was
 lost.
+
+A durable write can fail after the store has already renamed its new record or
+advanced a protected anchor. Because the live process cannot distinguish that
+case from a pre-commit failure, `ChatSyncEngine` enters a terminal persistence
+fault and rejects subsequent reads, writes, diagnostics and network cycles.
+The owner must discard that engine and restore from the authenticated durable
+head; continuing from its older in-memory generation is forbidden.
 
 Only the head of each conversation is eligible to send. A delayed head blocks
 later messages in that conversation, while independent conversations continue.

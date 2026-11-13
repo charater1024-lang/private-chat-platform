@@ -64,6 +64,27 @@ void main() {
       expect(runtime.baseUri.host, InternetAddress.loopbackIPv4.address);
       expect(runtime.toString(), isNot(contains(runtime.ownerAccessToken)));
 
+      final health = await client.json('GET', '/healthz');
+      expect(health.status, HttpStatus.ok);
+      expect(health.object, const {'status': 'ok'});
+      final healthQuery = await client.json('GET', '/healthz?detail=true');
+      expect(healthQuery.status, HttpStatus.badRequest);
+      final healthBody = await client.json(
+        'GET',
+        '/healthz',
+        body: const {'unexpected': true},
+      );
+      expect(healthBody.status, HttpStatus.badRequest);
+      final healthPost = await client.json('POST', '/healthz');
+      expect(healthPost.status, HttpStatus.methodNotAllowed);
+      final healthWrongHost = await client.binary(
+        'GET',
+        '/healthz',
+        token: 'unused-health-token',
+        headers: const {HttpHeaders.hostHeader: 'untrusted.example.test'},
+      );
+      expect(healthWrongHost.status, HttpStatus.forbidden);
+
       final unauthenticated = await client.json(
         'GET',
         '/v1/homeserver/profile',
@@ -2110,7 +2131,11 @@ void main() {
       expect(recoveredChunk.status, HttpStatus.ok);
       expect(recoveredChunk.body, encryptedMedia);
 
-      store.failNextWrite = true;
+      // Simulate the dangerous crash window where the exact snapshot was
+      // committed but the storage adapter could not confirm success to the
+      // runtime. The live process must become terminally faulted rather than
+      // continue from its rolled-back in-memory generation.
+      store.commitThenFailNextWrite = true;
       final failedGeneration = runtime.snapshotGeneration;
       final rejected = await client.json(
         'POST',
@@ -2119,9 +2144,33 @@ void main() {
         idempotencyKey: 'persistent_rollback_001',
         body: invitationBody,
       );
-      expect(rejected.status, HttpStatus.internalServerError);
+      expect(rejected.status, HttpStatus.serviceUnavailable);
+      expect(rejected.object['code'], 'PERSISTENCE_UNAVAILABLE');
+      expect(runtime.snapshotGeneration, failedGeneration);
+      expect(runtime.hasTerminalPersistenceFault, isTrue);
+
+      final blockedWhileFaulted = await client.json(
+        'POST',
+        '/v1/invitations',
+        token: ownerToken,
+        idempotencyKey: 'persistent_rollback_001',
+        body: invitationBody,
+      );
+      expect(blockedWhileFaulted.status, HttpStatus.serviceUnavailable);
+      expect(blockedWhileFaulted.object['code'], 'PERSISTENCE_UNAVAILABLE');
       expect(runtime.snapshotGeneration, failedGeneration);
 
+      client.close();
+      await runtime.close();
+      runtime = await HomeserverRuntime.start(
+        config,
+        snapshotStore: store,
+        minimumSnapshotGeneration: failedGeneration,
+      );
+      client = _LoopbackClient(runtime.baseUri);
+      expect(runtime.hasTerminalPersistenceFault, isFalse);
+      expect(runtime.snapshotGeneration, failedGeneration + 1);
+      final recoveredSnapshotBeforeReplay = store.copyLatestBytes();
       final recoveredMutation = await client.json(
         'POST',
         '/v1/invitations',
@@ -2130,7 +2179,12 @@ void main() {
         body: invitationBody,
       );
       expect(recoveredMutation.status, HttpStatus.created);
-      expect(runtime.snapshotGeneration, failedGeneration + 1);
+      // Idempotent hits still pass through the durable mutation wrapper so
+      // expiry pruning (if any) is persisted. The replay therefore writes the
+      // same logical state at the next generation; it must not create a second
+      // invitation.
+      expect(runtime.snapshotGeneration, failedGeneration + 2);
+      expect(store.copyLatestBytes(), recoveredSnapshotBeforeReplay);
     },
   );
 
@@ -2596,6 +2650,7 @@ final class _MemoryRuntimeSnapshotStore
   Uint8List? _bytes;
   int _generation;
   bool failNextWrite = false;
+  bool commitThenFailNextWrite = false;
   Completer<void>? nextWriteStarted;
   Completer<void>? releaseNextWrite;
 
@@ -2634,6 +2689,10 @@ final class _MemoryRuntimeSnapshotStore
     }
     _generation += 1;
     _bytes = Uint8List.fromList(plaintext);
+    if (commitThenFailNextWrite) {
+      commitThenFailNextWrite = false;
+      throw StateError('simulated indeterminate committed write');
+    }
     return PrivateAtomicSnapshot(generation: _generation, bytes: plaintext);
   }
 }

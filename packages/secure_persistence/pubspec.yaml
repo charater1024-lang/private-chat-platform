@@ -1,0 +1,16 @@
+name: secure_persistence
+description: Fail-closed authenticated encrypted generation storage for private chat state.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dependencies:
+  cryptography: ^2.9.0
+
+dev_dependencies:
+  lints: ^6.0.0
+  test: ^1.25.6

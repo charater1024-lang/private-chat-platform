@@ -1,11 +1,15 @@
 # chat_media_crypto
 
+`PrivateFileAttachmentStager` keeps decrypted bytes in a verified app-private
+directory and publishes only after full stream authentication by an atomic
+same-directory rename. Shared/user-visible export is a separate explicit step.
+
 This pure-Dart package defines the client-side attachment cipher used before an
 opaque media object is uploaded to a self-hosted server. It is an **unaudited,
 provisional AEAD profile**, not a messaging E2EE protocol or finished crypto
-product. It differs from the architecture ADR's preferred libsodium
-`secretstream` construction; adopting that native dependency safely remains a
-separate, release-blocking implementation and review task.
+product. The architecture ADR now records this exact independently framed
+ChaCha20-Poly1305 profile; protocol review, interoperability vectors and an
+independent audit remain release blockers.
 
 ## Version 1 format
 

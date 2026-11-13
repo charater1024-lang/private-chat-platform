@@ -20,6 +20,8 @@ final class ManualSyncClock implements SyncClock {
 final class MemorySnapshotStore implements SyncSnapshotStore {
   SyncStateSnapshot? _snapshot;
   int writes = 0;
+  bool failNextWrite = false;
+  bool commitThenFailNextWrite = false;
 
   SyncStateSnapshot? get snapshot => _snapshot == null
       ? null
@@ -37,6 +39,10 @@ final class MemorySnapshotStore implements SyncSnapshotStore {
     SyncStateSnapshot snapshot, {
     required int expectedGeneration,
   }) async {
+    if (failNextWrite) {
+      failNextWrite = false;
+      throw StateError('simulated storage failure');
+    }
     final actual = _snapshot?.generation ?? 0;
     if (actual != expectedGeneration ||
         snapshot.generation != expectedGeneration + 1) {
@@ -44,6 +50,10 @@ final class MemorySnapshotStore implements SyncSnapshotStore {
     }
     _snapshot = SyncStateSnapshot.fromJson(_roundTrip(snapshot.toJson()));
     writes += 1;
+    if (commitThenFailNextWrite) {
+      commitThenFailNextWrite = false;
+      throw StateError('simulated indeterminate committed write');
+    }
   }
 
   static Map<String, Object?> _roundTrip(Map<String, Object?> value) =>

@@ -16,6 +16,13 @@ namespace {
 #define DWMWA_USE_IMMERSIVE_DARK_MODE 20
 #endif
 
+// Windows 10 version 2004+ omits the window entirely from most capture APIs.
+// Older Windows releases fall back to WDA_MONITOR, which blanks captured
+// content but cannot protect against a camera or a compromised process.
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
 /// Registry key for app theme preference.
@@ -142,6 +149,10 @@ bool Win32Window::Create(const std::wstring& title,
 
   if (!window) {
     return false;
+  }
+
+  if (!SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE)) {
+    SetWindowDisplayAffinity(window, WDA_MONITOR);
   }
 
   UpdateTheme(window);

@@ -67,9 +67,41 @@ void main(List<String> arguments) {
     } else if (normalizedPath.endsWith('/release-gate.yml')) {
       _validateTriggers(document, path, const {'workflow_dispatch'});
       _validateReadOnlyPermissions(document, path);
+    } else if (normalizedPath.endsWith('/platform-build-smoke.yml')) {
+      _validateTriggers(document, path, const {'workflow_dispatch'});
+      _validateReadOnlyPermissions(document, path);
+    } else if (normalizedPath.endsWith('/native-crypto.yml')) {
+      _validateTriggers(document, path, const {
+        'push',
+        'pull_request',
+        'workflow_dispatch',
+      });
+      _validateReadOnlyPermissions(document, path);
+    } else if (normalizedPath.endsWith('/blockchain-contract.yml')) {
+      _validateTriggers(document, path, const {
+        'push',
+        'pull_request',
+        'workflow_dispatch',
+      });
+      _validateReadOnlyPermissions(document, path);
+    } else if (normalizedPath.endsWith('/dependency-review.yml')) {
+      _validateTriggers(document, path, const {'pull_request'});
+      _validateReadOnlyPermissions(document, path);
+    } else if (normalizedPath.endsWith('/native-collab-docs.yml')) {
+      _validateTriggers(document, path, const {
+        'push',
+        'pull_request',
+        'workflow_dispatch',
+      });
+      _validateReadOnlyPermissions(document, path);
     }
     if (normalizedPath.endsWith('/source-validation.yml') ||
-        normalizedPath.endsWith('/release-gate.yml')) {
+        normalizedPath.endsWith('/release-gate.yml') ||
+        normalizedPath.endsWith('/platform-build-smoke.yml') ||
+        normalizedPath.endsWith('/native-crypto.yml') ||
+        normalizedPath.endsWith('/blockchain-contract.yml') ||
+        normalizedPath.endsWith('/dependency-review.yml') ||
+        normalizedPath.endsWith('/native-collab-docs.yml')) {
       final jobs = _requiredMap(document['jobs'], path, 'jobs');
       if (jobs.isEmpty) {
         _fail('$path: workflow must declare at least one job');

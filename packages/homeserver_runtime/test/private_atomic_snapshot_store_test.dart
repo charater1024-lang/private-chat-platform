@@ -3,15 +3,18 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:homeserver_runtime/homeserver_runtime.dart';
+import 'package:secure_persistence/secure_persistence.dart';
 import 'package:test/test.dart';
 
 void main() {
   late Directory directory;
+  late _TestAnchor anchor;
 
   setUp(() async {
     directory = await Directory.systemTemp.createTemp(
       'private-homeserver-snapshot-',
     );
+    anchor = _TestAnchor();
   });
 
   tearDown(() async {
@@ -21,6 +24,7 @@ void main() {
   Future<PrivateAtomicSnapshotStore> openStore({
     HomeserverSnapshotProtector? protector,
     PrivateSnapshotDirectoryVerifier? verifier,
+    SecureGenerationAnchor? generationAnchor,
     int maximumPlaintextBytes = 1024,
     int maximumSealedBytes = 2048,
   }) => PrivateAtomicSnapshotStore.open(
@@ -28,6 +32,7 @@ void main() {
     namespace: 'runtime',
     protector: protector ?? const _TestProtector(),
     directoryVerifier: verifier ?? const _AcceptingVerifier(),
+    generationAnchor: generationAnchor ?? anchor,
     maximumPlaintextBytes: maximumPlaintextBytes,
     maximumSealedBytes: maximumSealedBytes,
   );
@@ -163,12 +168,84 @@ void main() {
 
     final restarted = await openStore();
     await expectLater(
-      restarted.read(minimumGeneration: 2),
+      restarted.read(),
       throwsA(
         isA<PrivateAtomicSnapshotStoreException>().having(
           (error) => error.code,
           'code',
           PrivateAtomicSnapshotStoreError.rollbackDetected,
+        ),
+      ),
+    );
+  });
+
+  test('external head commitment detects a same-generation fork', () async {
+    final store = await openStore();
+    final authoritative = await store.writeAtomically(
+      utf8.encode('authoritative-generation-one'),
+      expectedGeneration: 0,
+    );
+    authoritative.dispose();
+    final original = (await _snapshotFiles(directory)).single;
+
+    final forkDirectory = await Directory.systemTemp.createTemp(
+      'private-homeserver-snapshot-fork-',
+    );
+    addTearDown(() async {
+      if (await forkDirectory.exists()) {
+        await forkDirectory.delete(recursive: true);
+      }
+    });
+    final forkStore = await PrivateAtomicSnapshotStore.open(
+      directory: forkDirectory,
+      namespace: 'runtime',
+      protector: const _TestProtector(),
+      directoryVerifier: const _AcceptingVerifier(),
+      generationAnchor: _TestAnchor(),
+      maximumPlaintextBytes: 1024,
+      maximumSealedBytes: 2048,
+    );
+    final forked = await forkStore.writeAtomically(
+      utf8.encode('forked-generation-one'),
+      expectedGeneration: 0,
+    );
+    forked.dispose();
+    final forkFile = (await _snapshotFiles(forkDirectory)).single;
+    await original.writeAsBytes(await forkFile.readAsBytes(), flush: true);
+
+    await expectLater(
+      store.read(),
+      throwsA(
+        isA<PrivateAtomicSnapshotStoreException>().having(
+          (error) => error.code,
+          'code',
+          PrivateAtomicSnapshotStoreError.rollbackDetected,
+        ),
+      ),
+    );
+  });
+
+  test('duplicate files for one committed generation fail closed', () async {
+    final store = await openStore();
+    final committed = await store.writeAtomically(
+      utf8.encode('one-logical-generation'),
+      expectedGeneration: 0,
+    );
+    committed.dispose();
+    final original = (await _snapshotFiles(directory)).single;
+    final duplicate = File(
+      '${directory.path}${Platform.pathSeparator}'
+      'runtime.snapshot.00000000000000000001.AAAAAAAAAAAAAAAAAAAAAA.bin',
+    );
+    await duplicate.writeAsBytes(await original.readAsBytes(), flush: true);
+
+    await expectLater(
+      store.read(),
+      throwsA(
+        isA<PrivateAtomicSnapshotStoreException>().having(
+          (error) => error.code,
+          'code',
+          PrivateAtomicSnapshotStoreError.corruptState,
         ),
       ),
     );
@@ -232,6 +309,37 @@ void main() {
       isEmpty,
     );
   });
+
+  test(
+    'anchor failure never reports a committed write as successful',
+    () async {
+      anchor.failAdvance = true;
+      final store = await openStore();
+
+      await expectLater(
+        store.writeAtomically(
+          utf8.encode('committed-but-unanchored'),
+          expectedGeneration: 0,
+        ),
+        throwsA(
+          isA<PrivateAtomicSnapshotStoreException>().having(
+            (error) => error.code,
+            'code',
+            PrivateAtomicSnapshotStoreError.protectionFailure,
+          ),
+        ),
+      );
+      expect(await _snapshotFiles(directory), hasLength(1));
+
+      anchor.failAdvance = false;
+      final restarted = await openStore();
+      final recovered = await restarted.read();
+      expect(recovered!.generation, 1);
+      expect(utf8.decode(recovered.copyBytes()), 'committed-but-unanchored');
+      recovered.dispose();
+      expect(anchor.value.generation, 1);
+    },
+  );
 
   test('unprotect failure is sanitized and never returns bytes', () async {
     final writer = await openStore();
@@ -329,6 +437,7 @@ void main() {
           namespace: 'runtime',
           protector: const _TestProtector(),
           directoryVerifier: const PosixOwnerOnlySnapshotDirectoryVerifier(),
+          generationAnchor: anchor,
           maximumPlaintextBytes: 1024,
           maximumSealedBytes: 2048,
         ),
@@ -342,6 +451,24 @@ void main() {
       );
     },
   );
+}
+
+final class _TestAnchor implements SecureGenerationAnchor {
+  SecureGenerationHead value = SecureGenerationHead.initial();
+  bool failAdvance = false;
+
+  @override
+  Future<void> advanceTo(SecureGenerationHead head) async {
+    if (failAdvance) throw StateError('anchor unavailable');
+    if (head.generation < value.generation ||
+        (head.generation == value.generation && !head.matches(value))) {
+      throw StateError('anchor regression or fork');
+    }
+    value = head;
+  }
+
+  @override
+  Future<SecureGenerationHead> readHead() async => value;
 }
 
 final class _AcceptingVerifier implements PrivateSnapshotDirectoryVerifier {

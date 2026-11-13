@@ -16,6 +16,21 @@ class SecureLocalizationsKo extends SecureLocalizations {
   String get search => '검색';
 
   @override
+  String get messageSearchHint => '현재 채널의 메시지 검색';
+
+  @override
+  String get closeMessageSearch => '메시지 검색 닫기';
+
+  @override
+  String get clearSearch => '검색어 지우기';
+
+  @override
+  String get messageSearchLocalOnly => '메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.';
+
+  @override
+  String get noMessageSearchResults => '이 채널에서 일치하는 메시지를 찾지 못했습니다.';
+
+  @override
   String get channelInfo => '채널 정보';
 
   @override

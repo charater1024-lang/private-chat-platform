@@ -689,16 +689,40 @@ foreach ($file in $pubLockFiles) {
 
 foreach ($file in $cargoManifestFiles) {
     $relativePath = (Get-RelativeWorkspacePath -Path $file.FullName).Replace('\', '/')
-    if ($relativePath -ne 'native/openmls_bridge/Cargo.toml') {
+    $manifestPolicies = @{
+        'native/openmls_bridge/Cargo.toml' = @{
+            Name = 'privacy_chat_openmls_bridge'
+            Versions = @{
+                openmls                  = '=0.9.2'
+                openmls_basic_credential = '=0.6.0'
+                openmls_rust_crypto      = '=0.6.0'
+                openmls_traits           = '=0.6.0'
+                tls_codec                = '=0.5.0'
+                thiserror                = '=2.0.17'
+                zeroize                  = '=1.9.1'
+            }
+        }
+        'native/collab_crdt_bridge/Cargo.toml' = @{
+            Name = 'privacy_chat_collab_crdt'
+            Versions = @{
+                automerge = '=0.12.0'
+                thiserror = '=2.0.17'
+                unicode_segmentation = '=1.13.3'
+                zeroize   = '=1.9.1'
+            }
+        }
+    }
+    if (-not $manifestPolicies.ContainsKey($relativePath)) {
         Add-PolicyViolation `
             -Path $file.FullName `
-            -Message 'Only the reviewed app-owned native/openmls_bridge Cargo manifest is permitted.'
+            -Message 'Only the reviewed OpenMLS and collaborative-document native manifests are permitted.'
         continue
     }
 
+    $manifestPolicy = $manifestPolicies[$relativePath]
     $content = Get-Content -LiteralPath $file.FullName -Raw
     $package = Get-CargoPackageIdentityFromContent -Content $content
-    if ($package.Name -ne 'privacy_chat_openmls_bridge' -or $package.Version -ne '0.1.0') {
+    if ($package.Name -ne $manifestPolicy.Name -or $package.Version -ne '0.1.0') {
         Add-PolicyViolation -Path $file.FullName -Message 'Unexpected native bridge package identity.'
     }
     if ($content -notmatch '(?m)^rust-version\s*=\s*"1\.91"\s*$') {
@@ -711,15 +735,7 @@ foreach ($file in $cargoManifestFiles) {
         Add-PolicyViolation -Path $file.FullName -Message 'The native bridge must remain non-publishable.'
     }
 
-    $expectedVersions = @{
-        openmls                 = '=0.9.2'
-        openmls_basic_credential = '=0.6.0'
-        openmls_rust_crypto     = '=0.6.0'
-        openmls_traits          = '=0.6.0'
-        tls_codec               = '=0.5.0'
-        thiserror               = '=2.0.17'
-        zeroize                 = '=1.9.1'
-    }
+    $expectedVersions = $manifestPolicy.Versions
     $seenExpected = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase
     )
@@ -770,8 +786,20 @@ foreach ($file in $cargoManifestFiles) {
 
 foreach ($file in $cargoLockFiles) {
     $relativePath = (Get-RelativeWorkspacePath -Path $file.FullName).Replace('\', '/')
-    if ($relativePath -ne 'native/openmls_bridge/Cargo.lock') {
-        Add-PolicyViolation -Path $file.FullName -Message 'Unexpected Cargo lockfile outside the reviewed native bridge.'
+    $lockPolicies = @{
+        'native/openmls_bridge/Cargo.lock' = @{
+            openmls                  = '0.9.2'
+            openmls_basic_credential = '0.6.0'
+            openmls_rust_crypto      = '0.6.0'
+            openmls_traits           = '0.6.0'
+            tls_codec                = '0.5.0'
+        }
+        'native/collab_crdt_bridge/Cargo.lock' = @{
+            automerge = '0.12.0'
+        }
+    }
+    if (-not $lockPolicies.ContainsKey($relativePath)) {
+        Add-PolicyViolation -Path $file.FullName -Message 'Unexpected Cargo lockfile outside the reviewed native bridges.'
         continue
     }
 
@@ -791,13 +819,7 @@ foreach ($file in $cargoLockFiles) {
         }
     }
 
-    $expectedLockedVersions = @{
-        openmls                  = '0.9.2'
-        openmls_basic_credential = '0.6.0'
-        openmls_rust_crypto      = '0.6.0'
-        openmls_traits           = '0.6.0'
-        tls_codec                = '0.5.0'
-    }
+    $expectedLockedVersions = $lockPolicies[$relativePath]
     foreach ($expectedName in $expectedLockedVersions.Keys) {
         $matches = @($packages | Where-Object { $_.Name -eq $expectedName })
         if ($matches.Count -ne 1 -or $matches[0].Version -ne $expectedLockedVersions[$expectedName] -or

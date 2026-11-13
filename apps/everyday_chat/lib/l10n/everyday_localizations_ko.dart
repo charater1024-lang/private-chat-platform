@@ -37,6 +37,18 @@ class EverydayLocalizationsKo extends EverydayLocalizations {
   String get searchChats => '대화 검색';
 
   @override
+  String get searchMessages => '현재 대화 내용 검색';
+
+  @override
+  String get closeMessageSearch => '대화 내용 검색 닫기';
+
+  @override
+  String get clearSearch => '검색어 지우기';
+
+  @override
+  String get messageSearchLocalOnly => '메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.';
+
+  @override
   String get trueE2ee => '목표 정책: 종단간 암호화 · 미검증';
 
   @override

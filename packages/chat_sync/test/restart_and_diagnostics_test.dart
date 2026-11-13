@@ -28,6 +28,61 @@ void main() {
     ),
   );
 
+  test(
+    'indeterminate durable commit terminally faults stale engine until restore',
+    () async {
+      final stale = await restore();
+      store.commitThenFailNextWrite = true;
+
+      await expectLater(
+        stale.enqueue(
+          conversationId: conversation(1),
+          clientMessageId: clientMessage(1),
+          ciphertext: ciphertext(10),
+        ),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      expect(stale.hasTerminalPersistenceFault, isTrue);
+      expect(
+        store.snapshot!.outbox.single.message.clientMessageId,
+        clientMessage(1),
+      );
+
+      await expectLater(
+        stale.diagnostics(),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      await expectLater(
+        stale.outboxStatus(clientMessage(1)),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      await expectLater(
+        stale.readDeliverable(),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      await expectLater(
+        stale.runCycle(),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      await expectLater(
+        stale.enqueue(
+          conversationId: conversation(1),
+          clientMessageId: clientMessage(2),
+          ciphertext: ciphertext(20),
+        ),
+        throwsA(isA<SyncPersistenceException>()),
+      );
+      expect(transport.openCalls, 0);
+
+      final recovered = await restore();
+      expect(recovered.hasTerminalPersistenceFault, isFalse);
+      expect(
+        await recovered.outboxStatus(clientMessage(1)),
+        OutboxStatus.queued,
+      );
+    },
+  );
+
   test('restart requeues an interrupted send and reconciles idempotently', () async {
     final firstProcess = await restore();
     await firstProcess.enqueue(

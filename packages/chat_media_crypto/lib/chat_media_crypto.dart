@@ -9,12 +9,14 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:chat_media/chat_media.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:cryptography/dart.dart';
+import 'package:secure_persistence/secure_persistence.dart';
 
 part 'src/aad_codec.dart';
 part 'src/attachment_cipher.dart';
@@ -23,4 +25,5 @@ part 'src/attachment_exception.dart';
 part 'src/attachment_key.dart';
 part 'src/attachment_manifest.dart';
 part 'src/attachment_staging.dart';
+part 'src/private_file_attachment_stager.dart';
 part 'src/ciphertext_chunk.dart';

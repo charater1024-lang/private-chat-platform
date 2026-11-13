@@ -16,6 +16,23 @@ class SecureLocalizationsEn extends SecureLocalizations {
   String get search => 'Search';
 
   @override
+  String get messageSearchHint => 'Search messages in this channel';
+
+  @override
+  String get closeMessageSearch => 'Close message search';
+
+  @override
+  String get clearSearch => 'Clear search';
+
+  @override
+  String get messageSearchLocalOnly =>
+      'Message content is searched only on this device and is not sent to the server.';
+
+  @override
+  String get noMessageSearchResults =>
+      'No matching messages were found in this channel.';
+
+  @override
   String get channelInfo => 'Channel information';
 
   @override

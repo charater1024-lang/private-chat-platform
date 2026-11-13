@@ -69,10 +69,31 @@ Map<String, Object?> _buildBom(Directory workspace) {
     '${workspace.path}${Platform.pathSeparator}apps'
     '${Platform.pathSeparator}secure_collab${Platform.pathSeparator}pubspec.yaml',
   );
+  final cargoLocks = <({String relativePath, File file, String rootPackage})>[
+    (
+      relativePath: 'native/openmls_bridge/Cargo.lock',
+      file: File(
+        '${workspace.path}${Platform.pathSeparator}native'
+        '${Platform.pathSeparator}openmls_bridge'
+        '${Platform.pathSeparator}Cargo.lock',
+      ),
+      rootPackage: 'privacy_chat_openmls_bridge',
+    ),
+    (
+      relativePath: 'native/collab_crdt_bridge/Cargo.lock',
+      file: File(
+        '${workspace.path}${Platform.pathSeparator}native'
+        '${Platform.pathSeparator}collab_crdt_bridge'
+        '${Platform.pathSeparator}Cargo.lock',
+      ),
+      rootPackage: 'privacy_chat_collab_crdt',
+    ),
+  ];
   if (!lockFile.existsSync() ||
       !rootManifest.existsSync() ||
       !everydayManifest.existsSync() ||
-      !collabManifest.existsSync()) {
+      !collabManifest.existsSync() ||
+      cargoLocks.any((lock) => !lock.file.existsSync())) {
     throw const _SbomException('run this tool from the workspace root');
   }
 
@@ -137,6 +158,7 @@ Map<String, Object?> _buildBom(Directory workspace) {
         throw const _SbomException('lockfile contains an unsupported source');
     }
   }
+  components.addAll(_cargoComponents(cargoLocks));
   components.sort(
     (left, right) =>
         (left['bom-ref']! as String).compareTo(right['bom-ref']! as String),
@@ -182,6 +204,159 @@ Map<String, Object?> _buildBom(Directory workspace) {
       },
     ],
   };
+}
+
+List<Map<String, Object?>> _cargoComponents(
+  List<({String relativePath, File file, String rootPackage})> locks,
+) {
+  final packagesByReference = <String, _CargoLockedPackage>{};
+  for (final lock in locks) {
+    final packages = _parseCargoLock(
+      lock.file.readAsStringSync(),
+      relativePath: lock.relativePath,
+      expectedRootPackage: lock.rootPackage,
+    );
+    for (final package in packages) {
+      final existing = packagesByReference[package.reference];
+      if (existing == null) {
+        packagesByReference[package.reference] = package;
+        continue;
+      }
+      if (existing.name != package.name ||
+          existing.version != package.version ||
+          existing.checksum != package.checksum ||
+          existing.isWorkspacePackage != package.isWorkspacePackage) {
+        throw const _SbomException(
+          'Cargo lockfiles disagree about a package identity',
+        );
+      }
+      existing.lockfiles.addAll(package.lockfiles);
+    }
+  }
+
+  return packagesByReference.values
+      .map((package) {
+        final lockfiles = package.lockfiles.toList()..sort();
+        final properties = <Map<String, String>>[
+          {'name': 'chat-platform:dependency-scope', 'value': 'native-runtime'},
+          {
+            'name': 'chat-platform:source',
+            'value': package.isWorkspacePackage ? 'workspace' : 'crates.io',
+          },
+          {'name': 'chat-platform:lockfiles', 'value': lockfiles.join(',')},
+        ];
+        if (package.isWorkspacePackage) {
+          return <String, Object?>{
+            'type': 'library',
+            'bom-ref': package.reference,
+            'group': 'chat-platform-native',
+            'name': package.name,
+            'version': package.version,
+            'purl': package.reference,
+            'properties': properties,
+          };
+        }
+        return <String, Object?>{
+          'type': 'library',
+          'bom-ref': package.reference,
+          'group': 'crates.io',
+          'name': package.name,
+          'version': package.version,
+          'hashes': <Map<String, String>>[
+            {'alg': 'SHA-256', 'content': package.checksum!},
+          ],
+          'purl': package.reference,
+          'externalReferences': <Map<String, String>>[
+            {
+              'type': 'distribution',
+              'url':
+                  'https://crates.io/crates/${package.name}/${package.version}',
+            },
+          ],
+          'properties': properties,
+        };
+      })
+      .toList(growable: false);
+}
+
+List<_CargoLockedPackage> _parseCargoLock(
+  String source, {
+  required String relativePath,
+  required String expectedRootPackage,
+}) {
+  if (!RegExp(r'^version\s*=\s*4\s*$', multiLine: true).hasMatch(source)) {
+    throw const _SbomException('Cargo lockfile version must be 4');
+  }
+  final blocks = source
+      .split(RegExp(r'^\[\[package\]\]\r?$', multiLine: true))
+      .skip(1);
+  final result = <_CargoLockedPackage>[];
+  var rootCount = 0;
+  for (final body in blocks) {
+    final name = _requiredTomlString(body, 'name');
+    final version = _requiredTomlString(body, 'version');
+    if (!_cargoPackageName.hasMatch(name) || !_version.hasMatch(version)) {
+      throw const _SbomException('Cargo package name or version is invalid');
+    }
+    final packageSource = _optionalTomlString(body, 'source');
+    final checksum = _optionalTomlString(body, 'checksum');
+    if (packageSource == null) {
+      if (name != expectedRootPackage || checksum != null) {
+        throw const _SbomException(
+          'Cargo lockfile contains an unexpected workspace package',
+        );
+      }
+      rootCount += 1;
+      result.add(
+        _CargoLockedPackage.workspace(
+          name: name,
+          version: version,
+          lockfile: relativePath,
+        ),
+      );
+      continue;
+    }
+    if (packageSource !=
+            'registry+https://github.com/rust-lang/crates.io-index' ||
+        checksum == null ||
+        !_sha256.hasMatch(checksum)) {
+      throw const _SbomException(
+        'Cargo dependency must use the checksummed crates.io registry',
+      );
+    }
+    result.add(
+      _CargoLockedPackage.registry(
+        name: name,
+        version: version,
+        checksum: checksum,
+        lockfile: relativePath,
+      ),
+    );
+  }
+  if (rootCount != 1 || result.isEmpty) {
+    throw const _SbomException('Cargo lockfile package set is incomplete');
+  }
+  return result;
+}
+
+String _requiredTomlString(String body, String field) {
+  final value = _optionalTomlString(body, field);
+  if (value == null) {
+    throw _SbomException('Cargo package metadata is missing $field');
+  }
+  return value;
+}
+
+String? _optionalTomlString(String body, String field) {
+  final prefix = '$field = "';
+  for (final rawLine in const LineSplitter().convert(body)) {
+    final line = rawLine.trim();
+    if (!line.startsWith(prefix) || !line.endsWith('"')) continue;
+    final value = line.substring(prefix.length, line.length - 1);
+    if (value.isEmpty || value.contains('"')) return null;
+    return value;
+  }
+  return null;
 }
 
 Map<String, Object?> _hostedComponent({
@@ -332,8 +507,55 @@ String _normalizedAbsolutePath(String path) {
 }
 
 final _packageName = RegExp(r'^[a-z_][a-z0-9_]*$');
+final _cargoPackageName = RegExp(r'^[A-Za-z0-9_][A-Za-z0-9_.+-]*$');
 final _version = RegExp(r'^[0-9A-Za-z][0-9A-Za-z.+_-]{0,127}$');
 final _appVersion = RegExp(r'^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$');
+final _sha256 = RegExp(r'^[a-f0-9]{64}$');
+
+final class _CargoLockedPackage {
+  _CargoLockedPackage._({
+    required this.name,
+    required this.version,
+    required this.checksum,
+    required this.isWorkspacePackage,
+    required String lockfile,
+  }) : lockfiles = {lockfile};
+
+  factory _CargoLockedPackage.registry({
+    required String name,
+    required String version,
+    required String checksum,
+    required String lockfile,
+  }) => _CargoLockedPackage._(
+    name: name,
+    version: version,
+    checksum: checksum,
+    isWorkspacePackage: false,
+    lockfile: lockfile,
+  );
+
+  factory _CargoLockedPackage.workspace({
+    required String name,
+    required String version,
+    required String lockfile,
+  }) => _CargoLockedPackage._(
+    name: name,
+    version: version,
+    checksum: null,
+    isWorkspacePackage: true,
+    lockfile: lockfile,
+  );
+
+  final String name;
+  final String version;
+  final String? checksum;
+  final bool isWorkspacePackage;
+  final Set<String> lockfiles;
+
+  String get reference => isWorkspacePackage
+      ? 'pkg:generic/${Uri.encodeComponent(name)}@${Uri.encodeComponent(version)}'
+      : 'pkg:cargo/${Uri.encodeComponent(name)}@${Uri.encodeComponent(version)}';
+}
 
 final class _Options {
   const _Options._({required this.checkOnly, required this.outputPath});

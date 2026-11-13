@@ -1,6 +1,6 @@
 # 연구·신기술 적용 검토
 
-기준일: 2026-09-03
+기준일: 2026-11-13
 
 이 문서는 논문·표준의 아이디어를 실제 제품 경계에 연결하되, 새 기술이라는
 이유만으로 암호 코어나 구형 기기 지원 범위를 넓히지 않기 위한 결정 기록이다.
@@ -17,7 +17,7 @@
 | ML-KEM·hybrid post-quantum MLS | 관찰·실험만 | 정식 표준, 고정 구현, 구형 기기 성능 증거 전에는 비활성 |
 | Partial MLS | 격리 실험 | 대형 그룹의 구형 기기 join 비용 측정; 기본 client에는 비활성 |
 | MIMI content semantics | 관찰·상호운용 실험 | reply·reaction·edit·expiry schema/test 참고; draft wire 호환 주장 금지 |
-| CRDT/local-first | 제한적 후보 | Secure Collab의 업무·문서만; 채팅 순서·권한·키 상태에는 사용 금지 |
+| CRDT/local-first | 격리 prototype | Automerge 0.12.0 native core를 Secure Collab 문서에만 시험; 채팅 순서·권한·키 상태에는 사용 금지 |
 | Acumen/E2EE collaborative snapshots | 요구사항 적용 | 초대 snapshot의 검증 가능성·fork-causal consistency·과거 이력 비공개를 협업 설계 gate에 추가 |
 | Oblivious HTTP | 선택적 연구 | 익명 key lookup/telemetry 같은 무상태 요청; 인증 sync 기본 경로에는 부적합 |
 | InstantOMR·Oblivious Signaling | 보류 | FHE 비용과 구현 성숙도 때문에 별도 privacy-high 프로필의 장기 연구 |
@@ -129,15 +129,31 @@ API 24급 기기의 latency/RAM/battery 예산, downgrade 방지와 독립 감�
 
 - 채팅 timeline, 구성원 제거, 기기 폐기, key epoch와 transparency checkpoint는
   homeserver sequence와 보안 상태 머신을 계속 사용한다.
-- CRDT operation은 MLS application message 안에서 E2EE하고 author, document ID,
-  permission epoch와 causal parent/head에 인증 결속한다.
+- CRDT operation은 MLS application message 안에서 E2EE하고 author, document ID와
+  permission epoch를 공개 routing AAD에 결속한다. causal parent/head와 change hash는
+  encrypted payload 내부에서 device signature가 ciphertext와 함께 보호한다.
 - client가 RBAC를 강제해 read-only·제거된 구성원의 edit를 거부하고, 권한 변경은
   admin 전용 보안 event로 처리한다. snapshot과 causal head를 서명·보존해 server의
   rollback, fork와 선택적 operation 누락을 탐지한다.
 - 삭제는 모든 복제본에서 즉시 물리 삭제된다는 의미가 아니므로 보존 정책과 UI에
   이 한계를 표시한다.
-- 현재 Dart/Flutter에서 검증된 구현과 구형 기기 성능 증거가 없으므로 새 runtime
-  의존성은 아직 추가하지 않는다.
+- Dart/Flutter에 직접 CRDT를 새로 만들지 않는다. OpenMLS crypto TCB와 분리한
+  Rust native prototype에서 Automerge `0.12.0`을 정확히 고정해 offline merge,
+  malformed input와 구형 기기 성능을 시험한다. crash-safe encrypted persistence,
+  제한된 FFI, parser fuzz와 외부 review 전에는 release client에 연결하지 않는다.
+
+[WordCraft](https://github.com/storytold/wordcraft)의 offline-first 문서 UX,
+stable command ID와 DOCX·ODT·Markdown interoperability는 참고할 수 있다. 반면
+[FigCraft의 online sharing](https://github.com/storytold/figcraft/blob/main/README.md#privacy-and-online-sharing)은
+현재 E2EE가 아니며 server가 평문 파일을 보관할 수 있으므로 collaboration
+구현은 채택하지 않는다. [Yjs threat model](https://github.com/yjs/yjs/blob/main/THREAT_MODEL.md)이
+명시하듯 write 권한을 얻은 악성 peer는 CRDT 상태를 손상시킬 수 있어, 수렴을
+authorization으로 오해하지 않고 모든 change의 device signature와 permission
+epoch를 수신 client가 다시 검증한다.
+
+[Keyhive](https://github.com/inkandswitch/keyhive)는 E2EE CRDT와 capability
+모델이 목표에 가깝지만 pre-alpha·미감사이며 production 사용을 금지하므로
+연구 feature flag와 interoperability test 밖에서는 사용하지 않는다.
 
 2026년 USENIX의 [End-to-End Encrypted Collaborative Documents](https://www.usenix.org/conference/usenixsecurity26/presentation/knabenhans)
 연구는 실시간 E2EE 공동 문서가 실현 가능함을 보이지만 연구 prototype이고

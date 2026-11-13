@@ -57,6 +57,13 @@ pub struct InboundApplicationMessage {
     pub plaintext: Vec<u8>,
 }
 
+impl Drop for InboundApplicationMessage {
+    fn drop(&mut self) {
+        self.authenticated_data.zeroize();
+        self.plaintext.zeroize();
+    }
+}
+
 /// One device-local MLS client.
 ///
 /// OpenMLS state currently lives in its in-memory provider. This type is not
@@ -106,10 +113,14 @@ impl MlsClient {
                 self.credential.clone(),
             )
             .map_err(|_| BridgeError::CryptographicFailure)?;
-        bundle
+        let encoded = bundle
             .key_package()
             .tls_serialize_detached()
-            .map_err(|_| BridgeError::CryptographicFailure)
+            .map_err(|_| BridgeError::CryptographicFailure)?;
+        if encoded.is_empty() || encoded.len() > MAX_KEY_PACKAGE_BYTES {
+            return Err(BridgeError::InvalidInput);
+        }
+        Ok(encoded)
     }
 
     pub fn create_group(&mut self, group_id: &[u8]) -> Result<(), BridgeError> {
@@ -146,6 +157,9 @@ impl MlsClient {
             .validate(self.provider.crypto(), ProtocolVersion::Mls10)
             .map_err(|_| BridgeError::AuthenticationFailed)?;
         validate_group_id(group_id)?;
+        if self.pending_inbound_commits.contains_key(group_id) {
+            return Err(BridgeError::GroupStateConflict);
+        }
         let provider = &self.provider;
         let signer = &self.signer;
         let group = self
@@ -158,17 +172,45 @@ impl MlsClient {
         let (commit, welcome, _) = group
             .add_members(provider, signer, &[key_package])
             .map_err(|_| BridgeError::CryptographicFailure)?;
-        let commit = commit
-            .tls_serialize_detached()
-            .map_err(|_| BridgeError::CryptographicFailure)?;
-        let welcome = welcome
-            .tls_serialize_detached()
-            .map_err(|_| BridgeError::CryptographicFailure)?;
+        let mut commit = match commit.tls_serialize_detached() {
+            Ok(commit) => commit,
+            Err(_) => {
+                group
+                    .clear_pending_commit(provider.storage())
+                    .map_err(|_| BridgeError::CryptographicFailure)?;
+                return Err(BridgeError::CryptographicFailure);
+            }
+        };
+        let mut welcome = match welcome.tls_serialize_detached() {
+            Ok(welcome) => welcome,
+            Err(_) => {
+                commit.zeroize();
+                group
+                    .clear_pending_commit(provider.storage())
+                    .map_err(|_| BridgeError::CryptographicFailure)?;
+                return Err(BridgeError::CryptographicFailure);
+            }
+        };
+        if commit.is_empty()
+            || commit.len() > MAX_MESSAGE_BYTES
+            || welcome.is_empty()
+            || welcome.len() > MAX_WELCOME_BYTES
+        {
+            commit.zeroize();
+            welcome.zeroize();
+            group
+                .clear_pending_commit(provider.storage())
+                .map_err(|_| BridgeError::CryptographicFailure)?;
+            return Err(BridgeError::InvalidInput);
+        }
         Ok(PreparedMemberAdd { commit, welcome })
     }
 
     pub fn confirm_pending_commit(&mut self, group_id: &[u8]) -> Result<(), BridgeError> {
         validate_group_id(group_id)?;
+        if self.pending_inbound_commits.contains_key(group_id) {
+            return Err(BridgeError::GroupStateConflict);
+        }
         let provider = &self.provider;
         let group = self
             .groups
@@ -210,14 +252,17 @@ impl MlsClient {
         let staged =
             StagedWelcome::new_from_welcome(&self.provider, &group_join_config(), welcome, None)
                 .map_err(|_| BridgeError::AuthenticationFailed)?;
-        let group = staged
-            .into_group(&self.provider)
-            .map_err(|_| BridgeError::CryptographicFailure)?;
-        let group_id = group.group_id().as_slice().to_vec();
+        let group_id = staged.group_context().group_id().as_slice().to_vec();
         validate_group_id(&group_id)?;
         if self.groups.contains_key(&group_id) {
             return Err(BridgeError::GroupAlreadyExists);
         }
+        // `into_group` persists through the provider. Rejecting a duplicate
+        // only afterwards could replace the durable state behind the existing
+        // in-memory group with a different, attacker-supplied branch.
+        let group = staged
+            .into_group(&self.provider)
+            .map_err(|_| BridgeError::CryptographicFailure)?;
         self.groups.insert(group_id.clone(), group);
         Ok(group_id)
     }
@@ -271,6 +316,12 @@ impl MlsClient {
         let protocol_message = wire
             .try_into_protocol_message()
             .map_err(|_| BridgeError::InvalidInput)?;
+        if matches!(
+            &protocol_message,
+            ProtocolMessage::PrivateMessage(message) if message.aad().len() > MAX_AAD_BYTES
+        ) {
+            return Err(BridgeError::InvalidInput);
+        }
         validate_group_id(group_id)?;
         let provider = &self.provider;
         let group = self
@@ -280,23 +331,36 @@ impl MlsClient {
         let processed = group
             .process_message(provider, protocol_message)
             .map_err(|_| BridgeError::AuthenticationFailed)?;
-        let aad = processed.aad().to_vec();
+        let mut aad = processed.aad().to_vec();
+        if aad.len() > MAX_AAD_BYTES {
+            aad.zeroize();
+            return Err(BridgeError::InvalidInput);
+        }
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(message) => {
+                let mut plaintext = message.into_bytes();
+                if plaintext.is_empty() || plaintext.len() > MAX_PLAINTEXT_BYTES {
+                    plaintext.zeroize();
+                    aad.zeroize();
+                    return Err(BridgeError::InvalidInput);
+                }
                 Ok(Some(InboundApplicationMessage {
                     authenticated_data: aad,
-                    plaintext: message.into_bytes(),
+                    plaintext,
                 }))
             }
             ProcessedMessageContent::StagedCommitMessage(commit) => {
+                if group.pending_commit().is_some() {
+                    return Err(BridgeError::GroupStateConflict);
+                }
                 self.pending_inbound_commits
                     .insert(group_id.to_vec(), commit);
                 Ok(None)
             }
-            ProcessedMessageContent::OwnPendingCommit => {
-                self.confirm_pending_commit(group_id)?;
-                Ok(None)
-            }
+            // Receipt of our own Commit proves only that the delivery service
+            // echoed the frame. The caller still has to durably advance its
+            // cursor/outbox state before explicitly merging the pending epoch.
+            ProcessedMessageContent::OwnPendingCommit => Ok(None),
             ProcessedMessageContent::OwnPrivateMessage => Ok(None),
             _ => Err(BridgeError::UnsupportedContent),
         }
@@ -306,11 +370,21 @@ impl MlsClient {
     /// authorized its membership changes and durably advanced its server
     /// cursor.
     pub fn confirm_inbound_commit(&mut self, group_id: &[u8]) -> Result<(), BridgeError> {
+        validate_group_id(group_id)?;
+        let group = self
+            .groups
+            .get(group_id)
+            .ok_or(BridgeError::GroupNotFound)?;
+        if group.pending_commit().is_some() {
+            return Err(BridgeError::GroupStateConflict);
+        }
+        if !self.pending_inbound_commits.contains_key(group_id) {
+            return Err(BridgeError::GroupStateConflict);
+        }
         let commit = self
             .pending_inbound_commits
             .remove(group_id)
             .ok_or(BridgeError::GroupStateConflict)?;
-        validate_group_id(group_id)?;
         let provider = &self.provider;
         let group = self
             .groups
@@ -354,6 +428,7 @@ fn validate_group_id(group_id: &[u8]) -> Result<(), BridgeError> {
 fn group_create_config() -> MlsGroupCreateConfig {
     MlsGroupCreateConfig::builder()
         .ciphersuite(CIPHERSUITE)
+        .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
         .padding_size(256)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(32, 2048))
         .max_past_epochs(1)
@@ -363,6 +438,7 @@ fn group_create_config() -> MlsGroupCreateConfig {
 
 fn group_join_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
+        .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
         .padding_size(256)
         .sender_ratchet_configuration(SenderRatchetConfiguration::new(32, 2048))
         .max_past_epochs(1)
@@ -450,6 +526,82 @@ mod tests {
         );
         alice.confirm_pending_commit(GROUP_ID).unwrap();
         assert_eq!(alice.member_count(GROUP_ID).unwrap(), 2);
+    }
+
+    #[test]
+    fn echoed_own_commit_does_not_merge_before_durable_confirmation() {
+        let mut alice = MlsClient::new(b"alice-device-01").unwrap();
+        let bob = MlsClient::new(b"bob-device-01").unwrap();
+        alice.create_group(GROUP_ID).unwrap();
+        let prepared = alice
+            .prepare_add_member(GROUP_ID, &bob.generate_key_package().unwrap())
+            .unwrap();
+
+        assert_eq!(alice.process_incoming(GROUP_ID, &prepared.commit), Ok(None));
+        assert_eq!(alice.member_count(GROUP_ID).unwrap(), 1);
+        assert_eq!(
+            alice.encrypt(GROUP_ID, AAD, b"must wait for durable cursor"),
+            Err(BridgeError::GroupStateConflict)
+        );
+
+        alice.confirm_pending_commit(GROUP_ID).unwrap();
+        assert_eq!(alice.member_count(GROUP_ID).unwrap(), 2);
+    }
+
+    #[test]
+    fn duplicate_group_welcome_is_rejected_before_provider_state_is_replaced() {
+        let mut alice = MlsClient::new(b"alice-device-01").unwrap();
+        let mut bob = MlsClient::new(b"bob-device-01").unwrap();
+        alice.create_group(GROUP_ID).unwrap();
+        let first = alice
+            .prepare_add_member(GROUP_ID, &bob.generate_key_package().unwrap())
+            .unwrap();
+        alice.confirm_pending_commit(GROUP_ID).unwrap();
+        assert_eq!(bob.join_from_welcome(&first.welcome).unwrap(), GROUP_ID);
+
+        // A different valid group can deliberately reuse the public group id.
+        // Joining it must not persist over Bob's already active group state.
+        let mut mallory = MlsClient::new(b"mallory-device-01").unwrap();
+        mallory.create_group(GROUP_ID).unwrap();
+        let conflicting = mallory
+            .prepare_add_member(GROUP_ID, &bob.generate_key_package().unwrap())
+            .unwrap();
+        mallory.confirm_pending_commit(GROUP_ID).unwrap();
+        assert_eq!(
+            bob.join_from_welcome(&conflicting.welcome),
+            Err(BridgeError::GroupAlreadyExists)
+        );
+
+        let wire = alice
+            .encrypt(GROUP_ID, AAD, b"original branch remains usable")
+            .unwrap();
+        let opened = bob
+            .process_incoming(GROUP_ID, &wire)
+            .unwrap()
+            .expect("application message");
+        assert_eq!(opened.plaintext, b"original branch remains usable");
+    }
+
+    #[test]
+    fn staged_inbound_commit_blocks_competing_outbound_epoch_change() {
+        let (mut alice, mut bob) = paired_clients();
+        let charlie = MlsClient::new(b"charlie-device-01").unwrap();
+        let prepared = alice
+            .prepare_add_member(GROUP_ID, &charlie.generate_key_package().unwrap())
+            .unwrap();
+        alice.confirm_pending_commit(GROUP_ID).unwrap();
+        assert_eq!(bob.process_incoming(GROUP_ID, &prepared.commit), Ok(None));
+
+        let dave = MlsClient::new(b"dave-device-01").unwrap();
+        assert_eq!(
+            bob.prepare_add_member(GROUP_ID, &dave.generate_key_package().unwrap()),
+            Err(BridgeError::GroupStateConflict)
+        );
+        assert_eq!(bob.member_count(GROUP_ID).unwrap(), 2);
+
+        // The rejected outbound operation must not consume the staged commit.
+        bob.confirm_inbound_commit(GROUP_ID).unwrap();
+        assert_eq!(bob.member_count(GROUP_ID).unwrap(), 3);
     }
 
     #[test]

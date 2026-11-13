@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:chat_sync/chat_sync.dart';
+import 'package:crypto/crypto.dart';
 import 'package:homeserver_client/homeserver_client.dart';
 import 'package:test/test.dart';
 
@@ -73,6 +75,33 @@ void main() {
       ]) {
         expect(() => _config(Uri.parse(value)), throwsArgumentError);
       }
+    });
+
+    test('optional leaf pin is exact and requires HTTPS', () {
+      final der = List<int>.generate(64, (index) => index);
+      final policy = HomeserverTlsPeerPolicy.pinnedLeafCertificateSha256(
+        sha256.convert(der).toString(),
+      );
+      expect(policy.acceptsLeafDer(Uint8List.fromList(der)), isTrue);
+      expect(
+        policy.acceptsLeafDer(Uint8List.fromList(<int>[...der, 1])),
+        isFalse,
+      );
+      expect(
+        () => _config(
+          Uri.parse('http://127.0.0.1:8080'),
+          allowLoopback: true,
+          tlsPeerPolicy: policy,
+        ),
+        throwsArgumentError,
+      );
+      expect(
+        () => _config(
+          Uri.parse('https://homeserver.example'),
+          tlsPeerPolicy: policy,
+        ),
+        returnsNormally,
+      );
     });
   });
 
@@ -531,6 +560,8 @@ HomeserverHttpTransportConfig _config(
   Duration requestTimeout = const Duration(seconds: 15),
   bool requireKeyTransparency = true,
   int maximumPreparedRequests = 128,
+  HomeserverTlsPeerPolicy tlsPeerPolicy =
+      const HomeserverTlsPeerPolicy.platformTrust(),
 }) => HomeserverHttpTransportConfig(
   baseEndpoint: endpoint,
   expectedServerRef: testServerRef,
@@ -540,6 +571,7 @@ HomeserverHttpTransportConfig _config(
   conversationId: ConversationId(testConversationId),
   deviceRef: testDeviceRef,
   bearerCredential: PrivateBearerCredential(testToken),
+  tlsPeerPolicy: tlsPeerPolicy,
   allowInsecureLoopbackForTesting: allowLoopback,
   maximumResponseBytes: maximumResponseBytes,
   connectionTimeout: connectionTimeout,

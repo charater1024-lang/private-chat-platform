@@ -4,6 +4,10 @@
 
 Contributions in Korean and English are welcome. This is a security-sensitive prototype; every change must preserve the two product identities and their shared no-escrow security boundary.
 
+보안·의존성·CRDT·암호·배포 변경은
+[지속 코드·보안 검토 정책](docs/continuous-security-review.md)의 gate와 독립 검토
+요구를 먼저 확인한다.
+
 ## 시작하기
 
 1. issue에서 문제, expected behavior와 영향 제품을 먼저 설명한다.

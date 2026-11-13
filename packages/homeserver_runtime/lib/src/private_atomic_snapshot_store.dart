@@ -4,6 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:secure_persistence/secure_persistence.dart';
 
 /// Verifies that [directory] is an application-private storage boundary.
 ///
@@ -14,11 +15,11 @@ abstract interface class PrivateSnapshotDirectoryVerifier {
   Future<void> verify(Directory directory);
 }
 
-/// Owner-only POSIX directory verification based on mode bits.
+/// POSIX directory verification based on owner/group/other mode bits.
 ///
-/// This verifier deliberately rejects Windows because Dart's portable file API
-/// cannot prove effective Windows ACLs. Windows launchers must supply a native
-/// ACL verifier instead of weakening this check.
+/// This verifier deliberately rejects Windows. Dart's portable file API also
+/// cannot prove effective POSIX ownership, so root/container launchers must
+/// supply a native owner/ACL verifier instead of weakening this check.
 final class PosixOwnerOnlySnapshotDirectoryVerifier
     implements PrivateSnapshotDirectoryVerifier {
   const PosixOwnerOnlySnapshotDirectoryVerifier();
@@ -153,6 +154,7 @@ final class PrivateAtomicSnapshotStore
     this._namespace,
     this._protector,
     this._directoryVerifier,
+    this._generationAnchor,
     this._maximumPlaintextBytes,
     this._maximumSealedBytes,
     this._maximumDirectoryEntries,
@@ -173,6 +175,7 @@ final class PrivateAtomicSnapshotStore
     required String namespace,
     required HomeserverSnapshotProtector protector,
     required PrivateSnapshotDirectoryVerifier directoryVerifier,
+    required SecureGenerationAnchor generationAnchor,
     int maximumPlaintextBytes = defaultMaximumPlaintextBytes,
     int maximumSealedBytes = defaultMaximumSealedBytes,
     int maximumDirectoryEntries = defaultMaximumDirectoryEntries,
@@ -190,11 +193,13 @@ final class PrivateAtomicSnapshotStore
       namespace,
       protector,
       directoryVerifier,
+      generationAnchor,
       maximumPlaintextBytes,
       maximumSealedBytes,
       maximumDirectoryEntries,
     );
     await store._verifyBoundary();
+    await store._readAnchor();
     return store;
   }
 
@@ -207,6 +212,7 @@ final class PrivateAtomicSnapshotStore
   final String _namespace;
   final HomeserverSnapshotProtector _protector;
   final PrivateSnapshotDirectoryVerifier _directoryVerifier;
+  final SecureGenerationAnchor _generationAnchor;
   final int _maximumPlaintextBytes;
   final int _maximumSealedBytes;
   final int _maximumDirectoryEntries;
@@ -216,9 +222,8 @@ final class PrivateAtomicSnapshotStore
 
   /// Reads the latest committed generation.
   ///
-  /// Pass a trusted [minimumGeneration] retained outside this directory to
-  /// detect deletion-based rollback. Without such an external anchor, no file
-  /// store can distinguish an intentionally deleted newest file from history.
+  /// [minimumGeneration] is an optional launcher floor in addition to the
+  /// mandatory separately protected [SecureGenerationAnchor].
   @override
   Future<PrivateAtomicSnapshot?> read({int minimumGeneration = 0}) async {
     if (minimumGeneration < 0) {
@@ -227,13 +232,28 @@ final class PrivateAtomicSnapshotStore
       );
     }
     return _withExclusiveLock(() async {
-      final snapshot = await _readLatestUnlocked();
-      final actualGeneration = snapshot?.generation ?? 0;
-      if (actualGeneration < minimumGeneration) {
+      final record = await _readLatestUnlocked();
+      final snapshot = record?.snapshot;
+      final actualHead = record?.head ?? SecureGenerationHead.initial();
+      final anchoredHead = await _readAnchor();
+      final requiredGeneration = minimumGeneration > anchoredHead.generation
+          ? minimumGeneration
+          : anchoredHead.generation;
+      if (actualHead.generation < requiredGeneration ||
+          (actualHead.generation == anchoredHead.generation &&
+              !actualHead.matches(anchoredHead))) {
         snapshot?.dispose();
         throw const PrivateAtomicSnapshotStoreException(
           PrivateAtomicSnapshotStoreError.rollbackDetected,
         );
+      }
+      if (actualHead.generation > anchoredHead.generation) {
+        try {
+          await _advanceAnchor(actualHead);
+        } on Object {
+          snapshot?.dispose();
+          rethrow;
+        }
       }
       return snapshot;
     });
@@ -260,8 +280,20 @@ final class PrivateAtomicSnapshotStore
       return await _withExclusiveLock(() async {
         final candidates = await _committedCandidates();
         final current = await _readCandidate(candidates.lastOrNull);
-        final actualGeneration = current?.generation ?? 0;
-        current?.dispose();
+        final actualHead = current?.head ?? SecureGenerationHead.initial();
+        final actualGeneration = actualHead.generation;
+        current?.snapshot.dispose();
+        final anchoredHead = await _readAnchor();
+        if (actualGeneration < anchoredHead.generation ||
+            (actualGeneration == anchoredHead.generation &&
+                !actualHead.matches(anchoredHead))) {
+          throw const PrivateAtomicSnapshotStoreException(
+            PrivateAtomicSnapshotStoreError.rollbackDetected,
+          );
+        }
+        if (actualGeneration > anchoredHead.generation) {
+          await _advanceAnchor(actualHead);
+        }
         if (actualGeneration != expectedGeneration) {
           throw const PrivateAtomicSnapshotStoreException(
             PrivateAtomicSnapshotStoreError.generationConflict,
@@ -301,8 +333,10 @@ final class PrivateAtomicSnapshotStore
         }
 
         late final Uint8List record;
+        late final SecureGenerationHead committedHead;
         try {
           record = _encodeRecord(generation, sealed);
+          committedHead = _recordHead(generation, record);
         } finally {
           sealed.fillRange(0, sealed.length, 0);
         }
@@ -328,6 +362,7 @@ final class PrivateAtomicSnapshotStore
           }
           await pending.rename(committed.path);
           renamed = true;
+          await _advanceAnchor(committedHead);
         } on PrivateAtomicSnapshotStoreException {
           rethrow;
         } on Object {
@@ -391,14 +426,41 @@ final class PrivateAtomicSnapshotStore
     }
   }
 
-  Future<PrivateAtomicSnapshot?> _readLatestUnlocked() async {
+  Future<SecureGenerationHead> _readAnchor() async {
+    try {
+      return await _generationAnchor.readHead();
+    } on PrivateAtomicSnapshotStoreException {
+      rethrow;
+    } on Object {
+      throw const PrivateAtomicSnapshotStoreException(
+        PrivateAtomicSnapshotStoreError.protectionFailure,
+      );
+    }
+  }
+
+  Future<void> _advanceAnchor(SecureGenerationHead head) async {
+    try {
+      await _generationAnchor.advanceTo(head);
+      if (!(await _generationAnchor.readHead()).matches(head)) {
+        throw const PrivateAtomicSnapshotStoreException(
+          PrivateAtomicSnapshotStoreError.protectionFailure,
+        );
+      }
+    } on PrivateAtomicSnapshotStoreException {
+      rethrow;
+    } on Object {
+      throw const PrivateAtomicSnapshotStoreException(
+        PrivateAtomicSnapshotStoreError.protectionFailure,
+      );
+    }
+  }
+
+  Future<_StoredSnapshot?> _readLatestUnlocked() async {
     final candidates = await _committedCandidates();
     return _readCandidate(candidates.lastOrNull);
   }
 
-  Future<PrivateAtomicSnapshot?> _readCandidate(
-    _SnapshotCandidate? candidate,
-  ) async {
+  Future<_StoredSnapshot?> _readCandidate(_SnapshotCandidate? candidate) async {
     if (candidate == null) return null;
     final type = await FileSystemEntity.type(
       candidate.file.path,
@@ -427,7 +489,9 @@ final class PrivateAtomicSnapshotStore
       );
     }
     late final Uint8List decoded;
+    late final SecureGenerationHead head;
     try {
+      head = _recordHead(candidate.generation, record);
       decoded = _decodeRecord(record, candidate.generation);
     } finally {
       record.fillRange(0, record.length, 0);
@@ -451,9 +515,9 @@ final class PrivateAtomicSnapshotStore
         PrivateAtomicSnapshotStoreError.sizeLimitExceeded,
       );
     }
-    final result = PrivateAtomicSnapshot(
-      generation: candidate.generation,
-      bytes: plaintext,
+    final result = _StoredSnapshot(
+      PrivateAtomicSnapshot(generation: candidate.generation, bytes: plaintext),
+      head,
     );
     plaintext.fillRange(0, plaintext.length, 0);
     return result;
@@ -613,6 +677,12 @@ final class PrivateAtomicSnapshotStore
     return result.takeBytes();
   }
 
+  SecureGenerationHead _recordHead(int generation, List<int> exactRecord) =>
+      SecureGenerationHead(
+        generation: generation,
+        commitment: sha256.convert(exactRecord).bytes,
+      );
+
   Future<void> _verifyBoundary() async {
     try {
       final type = await FileSystemEntity.type(
@@ -669,6 +739,13 @@ final class _SnapshotCandidate {
 
   final int generation;
   final File file;
+}
+
+final class _StoredSnapshot {
+  const _StoredSnapshot(this.snapshot, this.head);
+
+  final PrivateAtomicSnapshot snapshot;
+  final SecureGenerationHead head;
 }
 
 final class _BoundaryRejected implements Exception {

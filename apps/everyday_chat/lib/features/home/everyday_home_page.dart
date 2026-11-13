@@ -14,6 +14,9 @@ import '../../l10n/everyday_localizations.dart';
 
 const _desktopBreakpoint = 900.0;
 const _mediaDescriptionLimit = 120;
+const _messageSearchScanLimit = 2000;
+const _messageSearchResultLimit = 100;
+const _messageSearchQueryLimit = 120;
 
 class EverydayHomePage extends StatefulWidget {
   const EverydayHomePage({
@@ -43,6 +46,7 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
   late final ServerConnectionProfile _connectionProfile;
   late final InMemoryHomeserverRepository _homeserverRepository;
   final _searchController = TextEditingController();
+  final _messageSearchController = TextEditingController();
   final _messageScrollController = ScrollController();
   final _displayNameController = TextEditingController(text: '민서');
   final _profileStatusController = TextEditingController(
@@ -56,6 +60,7 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
   int _conversationSequence = 0;
   int _localMessageSequence = 0;
   bool _showConversationOnPhone = false;
+  bool _messageSearchOpen = false;
   bool _isPicking = false;
   HomeserverSyncPresentation _syncPresentation =
       const HomeserverSyncPresentation.unconfigured();
@@ -201,6 +206,7 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
     _listenToMessageSync();
     unawaited(_synchronizeSelectedConversation());
     _searchController.addListener(_onSearchChanged);
+    _messageSearchController.addListener(_onMessageSearchChanged);
   }
 
   @override
@@ -218,6 +224,9 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
   void dispose() {
     _searchController
       ..removeListener(_onSearchChanged)
+      ..dispose();
+    _messageSearchController
+      ..removeListener(_onMessageSearchChanged)
       ..dispose();
     for (final draft in _draftsByConversation.values) {
       draft.dispose();
@@ -276,6 +285,50 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
 
   void _onSearchChanged() => setState(() {});
 
+  void _onMessageSearchChanged() => setState(() {});
+
+  void _toggleMessageSearch() {
+    setState(() {
+      _messageSearchOpen = !_messageSearchOpen;
+      if (!_messageSearchOpen) _messageSearchController.clear();
+    });
+  }
+
+  bool _matchesMessageSearch(_LocalMessage message, String query) {
+    if (message.text.toLowerCase().contains(query)) return true;
+    if ((message.author ?? '').toLowerCase().contains(query)) return true;
+    if (message.sticker?.bubbleText.toLowerCase().contains(query) ?? false) {
+      return true;
+    }
+    return message.media.any(
+      (item) =>
+          item.selection.fileName.toLowerCase().contains(query) ||
+          item.description.toLowerCase().contains(query),
+    );
+  }
+
+  List<MapEntry<int, _LocalMessage>> _visibleMessagesForSearch(String query) {
+    final messages = _messages;
+    if (query.isEmpty) return messages.asMap().entries.toList(growable: false);
+
+    final matches = <MapEntry<int, _LocalMessage>>[];
+    final firstIndex = (messages.length - _messageSearchScanLimit).clamp(
+      0,
+      messages.length,
+    );
+    for (
+      var index = messages.length - 1;
+      index >= firstIndex && matches.length < _messageSearchResultLimit;
+      index -= 1
+    ) {
+      final message = messages[index];
+      if (_matchesMessageSearch(message, query)) {
+        matches.add(MapEntry(index, message));
+      }
+    }
+    return matches.reversed.toList(growable: false);
+  }
+
   Iterable<MapEntry<int, _Conversation>> get _filteredConversations {
     final query = _searchController.text.trim().toLowerCase();
     return _conversations.asMap().entries.where((entry) {
@@ -289,6 +342,8 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
     setState(() {
       _selectedChat = index;
       _showConversationOnPhone = !isDesktop;
+      _messageSearchOpen = false;
+      _messageSearchController.clear();
     });
     unawaited(_synchronizeSelectedConversation());
   }
@@ -964,6 +1019,9 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
     final conversation = _conversations[_selectedChat];
     final draft = _draftFor(conversation.id);
     final scheme = Theme.of(context).colorScheme;
+    final messageQuery = _messageSearchController.text.trim().toLowerCase();
+    final visibleMessages = _visibleMessagesForSearch(messageQuery);
+    final showEmptySearch = messageQuery.isNotEmpty && visibleMessages.isEmpty;
     return Column(
       children: [
         Material(
@@ -1010,9 +1068,12 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
                   ),
                 ),
                 IconButton(
-                  tooltip: _l10n.voiceCall,
-                  onPressed: () {},
-                  icon: const Icon(Icons.call_outlined),
+                  key: const ValueKey('everyday-message-search-toggle'),
+                  tooltip: _messageSearchOpen
+                      ? _l10n.closeMessageSearch
+                      : _l10n.searchMessages,
+                  onPressed: _toggleMessageSearch,
+                  icon: Icon(_messageSearchOpen ? Icons.close : Icons.search),
                 ),
                 IconButton(
                   tooltip: _l10n.conversationInfo,
@@ -1023,6 +1084,33 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
             ),
           ),
         ),
+        if (_messageSearchOpen)
+          Material(
+            color: scheme.surface,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: TextField(
+                key: const ValueKey('everyday-message-search-field'),
+                controller: _messageSearchController,
+                autofocus: true,
+                maxLength: _messageSearchQueryLimit,
+                textInputAction: TextInputAction.search,
+                decoration: InputDecoration(
+                  hintText: _l10n.searchMessages,
+                  helperText: _l10n.messageSearchLocalOnly,
+                  counterText: '',
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _messageSearchController.text.isEmpty
+                      ? null
+                      : IconButton(
+                          tooltip: _l10n.clearSearch,
+                          onPressed: _messageSearchController.clear,
+                          icon: const Icon(Icons.clear),
+                        ),
+                ),
+              ),
+            ),
+          ),
         const Divider(height: 1),
         Expanded(
           child: DecoratedBox(
@@ -1036,7 +1124,7 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
             child: ListView.builder(
               controller: _messageScrollController,
               padding: const EdgeInsets.symmetric(vertical: 18),
-              itemCount: _messages.length + 1,
+              itemCount: visibleMessages.length + 1 + (showEmptySearch ? 1 : 0),
               itemBuilder: (context, index) {
                 if (index == 0) {
                   return Center(
@@ -1051,8 +1139,21 @@ class _EverydayHomePageState extends State<EverydayHomePage> {
                     ),
                   );
                 }
-                final messageIndex = index - 1;
-                final message = _messages[messageIndex];
+                if (showEmptySearch && index == 1) {
+                  return Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Center(
+                      child: Text(
+                        _l10n.noSearchResults,
+                        key: const ValueKey('everyday-message-search-empty'),
+                      ),
+                    ),
+                  );
+                }
+                final visibleIndex = index - 1 - (showEmptySearch ? 1 : 0);
+                final messageEntry = visibleMessages[visibleIndex];
+                final messageIndex = messageEntry.key;
+                final message = messageEntry.value;
                 return Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [

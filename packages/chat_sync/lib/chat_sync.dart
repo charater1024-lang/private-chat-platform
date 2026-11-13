@@ -7,6 +7,7 @@ library;
 
 export 'src/cancellation.dart';
 export 'src/diagnostics.dart';
+export 'src/encrypted_file_snapshot_store.dart';
 export 'src/engine.dart';
 export 'src/identifiers.dart';
 export 'src/models.dart';

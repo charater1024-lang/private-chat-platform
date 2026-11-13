@@ -16,6 +16,18 @@ add_executable(${BINARY_NAME}
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 
+# Harden the native runner and bind all symbols eagerly so writable GOT entries
+# do not remain available after startup.
+target_compile_options(${BINARY_NAME} PRIVATE
+  "$<$<NOT:$<CONFIG:Debug>>:-fstack-protector-strong>"
+  "$<$<NOT:$<CONFIG:Debug>>:-D_FORTIFY_SOURCE=2>"
+  "$<$<NOT:$<CONFIG:Debug>>:-fPIE>"
+)
+target_link_options(${BINARY_NAME} PRIVATE
+  "$<$<NOT:$<CONFIG:Debug>>:-Wl,-z,relro,-z,now>"
+  "$<$<NOT:$<CONFIG:Debug>>:-pie>"
+)
+
 # Add preprocessor definitions for the application ID.
 add_definitions(-DAPPLICATION_ID="${APPLICATION_ID}")
 

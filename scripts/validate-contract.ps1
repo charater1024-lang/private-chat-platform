@@ -44,7 +44,7 @@ if ($contract.Contains("`t")) {
 
 $requiredPatterns = [ordered]@{
     '^openapi: 3\.1\.0\s*$' = 'OpenAPI 3.1 is required.'
-    '^\s+version: 0\.7\.0\s*$' = 'The no-escrow API revision must remain explicit.'
+    '^\s+version: 0\.8\.0\s*$' = 'The no-escrow API revision must remain explicit.'
     '^  /v1/homeserver/profile:\s*$' = 'Homeserver profile discovery is required.'
     '^  /v1/members:\s*$' = 'The active-member directory is required.'
     '^  /v1/invitations:\s*$' = 'Invite-only registration is required.'
@@ -60,6 +60,10 @@ $requiredPatterns = [ordered]@{
     '^  /v1/key-transparency/proofs/inclusion:\s*$' = 'Inclusion proofs are required.'
     '^  /v1/key-transparency/proofs/consistency:\s*$' = 'Append-only consistency proofs are required.'
     '^  /v1/key-transparency/checkpoint-anchors:\s*$' = 'The optional minimal checkpoint anchor route is required.'
+    '^  /v1/documents:\s*$' = 'Encrypted collaborative-document creation and listing are required.'
+    '^  /v1/documents/\{document_id\}:\s*$' = 'Encrypted collaborative-document lookup is required.'
+    '^  /v1/documents/\{document_id\}/events:\s*$' = 'Opaque collaborative-document event synchronization is required.'
+    '^  /v1/documents/\{document_id\}/permission-transitions:\s*$' = 'Encrypted collaborative-document permission transitions are required.'
     '^    SecurityMode:\s*\r?\n\s+type: string\s*\r?\n\s+const: TRUE_E2EE\s*$' = 'Both products must have only TRUE_E2EE mode.'
     'const: PRIVACY_CONSUMER' = 'The consumer product discriminator is required.'
     'const: SECURE_COLLAB' = 'The collaboration product discriminator is required.'
@@ -76,8 +80,8 @@ $requiredPatterns = [ordered]@{
     'protocol_domain:\s*\r?\n\s+const: key-transparency/blockchain-anchor/v2' = 'The chain payload must use its v2 domain separation.'
     'const: no-store' = 'Responses containing invitation material must disable caching.'
     'writeOnly: true' = 'Invitation secrets and possession proofs must be write-only.'
-    "pattern: '\^\[A-Za-z0-9_-\]\{42\}\[AQgw\]\$'" = 'Every 32-byte digest, key, and nonce must use canonical unpadded base64url tail bits.'
-    "pattern: '\^\[A-Za-z0-9_-\]\{85\}\[AEIMQUYcgkosw048\]\$'" = 'The 64-byte registration proof must use canonical unpadded base64url tail bits.'
+    "pattern: '\^\[A-Za-z0-9_-\]\{42\}\[AEIMQUYcgkosw048\]\$'" = 'Every 32-byte digest, key, nonce, and document ID must use canonical unpadded base64url tail bits.'
+    "pattern: '\^\[A-Za-z0-9_-\]\{85\}\[AQgw\]\$'" = 'Every 64-byte signature must use canonical unpadded base64url tail bits.'
     'const: ko' = 'Korean must remain the homeserver default locale.'
 }
 

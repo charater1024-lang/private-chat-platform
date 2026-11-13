@@ -67,6 +67,8 @@ foreach ($product in $products) {
     Assert-Pattern $androidManifest '<uses-permission android:name="android\.permission\.INTERNET"\s*/>' "$product release manifest needs network permission."
     Assert-Pattern $androidManifest 'android:usesCleartextTraffic="false"' "$product must reject cleartext HTTP."
     Assert-Pattern $androidManifest 'android:allowBackup="false"' "$product must not place sensitive app data in Android backups."
+    Assert-Pattern $androidManifest 'android:dataExtractionRules="@xml/data_extraction_rules"' "$product must exclude sensitive state from Android cloud and device-transfer extraction."
+    Assert-Pattern $androidManifest 'android:fullBackupContent="@xml/backup_rules"' "$product must keep a pre-Android-12 backup exclusion policy."
     $androidPermissions = @(
         [regex]::Matches($androidManifest, '<uses-permission\s+android:name="([^"]+)"\s*/>') |
             ForEach-Object { $_.Groups[1].Value }
@@ -76,6 +78,26 @@ foreach ($product in $products) {
     }
     Assert-NoPattern $androidManifest 'android:networkSecurityConfig=' "$product must not add an unaudited Android network-security override."
     Assert-NoPattern $androidManifest 'android:(?:debuggable|testOnly)="true"' "$product release metadata must not enable debugging or test-only mode."
+
+    $backupRules = Read-WorkspaceFile "apps\$product\android\app\src\main\res\xml\backup_rules.xml"
+    $dataExtractionRules = Read-WorkspaceFile "apps\$product\android\app\src\main\res\xml\data_extraction_rules.xml"
+    Assert-XmlDocument $backupRules "$product Android backup rules"
+    Assert-XmlDocument $dataExtractionRules "$product Android data-extraction rules"
+    foreach ($domain in @('root', 'file', 'database', 'sharedpref', 'external')) {
+        Assert-Pattern $backupRules "<exclude\s+domain=`"$domain`"\s+path=`"\.`"\s*/>" "$product legacy backup policy must exclude the $domain domain."
+        Assert-Pattern $dataExtractionRules "<exclude\s+domain=`"$domain`"\s+path=`"\.`"\s*/>" "$product data-extraction policy must exclude the $domain domain."
+    }
+    foreach ($domain in @('device_root', 'device_file', 'device_database', 'device_sharedpref')) {
+        Assert-Pattern $dataExtractionRules "<exclude\s+domain=`"$domain`"\s+path=`"\.`"\s*/>" "$product data-extraction policy must exclude the $domain domain."
+    }
+
+    $androidActivityRoot = Join-Path $workspaceRoot "apps\$product\android\app\src\main\kotlin"
+    $androidActivities = @(Get-ChildItem -LiteralPath $androidActivityRoot -Recurse -File -Filter 'MainActivity.kt')
+    if ($androidActivities.Count -ne 1) {
+        throw "Product boundary failed: $product must have exactly one Android MainActivity."
+    }
+    $androidActivity = Get-Content -LiteralPath $androidActivities[0].FullName -Raw
+    Assert-Pattern $androidActivity 'WindowManager\.LayoutParams\.FLAG_SECURE' "$product must prevent Android capture and recent-task snapshots."
 
     $androidBuild = Read-WorkspaceFile "apps\$product\android\app\build.gradle.kts"
     Assert-Pattern $androidBuild '^\s*minSdk\s*=\s*24\s*$' "$product must retain the explicit Android compatibility floor."
@@ -90,9 +112,20 @@ foreach ($product in $products) {
     $iosPlist = Read-WorkspaceFile "apps\$product\ios\Runner\Info.plist"
     Assert-XmlDocument $iosPlist "$product iOS Info.plist"
     Assert-Pattern $iosPlist '<key>NSAllowsArbitraryLoads</key>\s*\r?\n\s*<false/>' "$product must not allow arbitrary iOS network loads."
+    Assert-Pattern $iosPlist '<key>NSLocalNetworkUsageDescription</key>\s*\r?\n\s*<string>[^<]+</string>' "$product must explain direct local-home-server access."
     Assert-NoPattern $iosPlist '<key>NSExceptionAllowsInsecureHTTPLoads</key>\s*\r?\n\s*<true/>' "$product must not allow insecure iOS HTTP exceptions."
 
+    $iosEntitlements = Read-WorkspaceFile "apps\$product\ios\Runner\Runner.entitlements"
+    Assert-XmlDocument $iosEntitlements "$product iOS entitlements"
+    Assert-Pattern $iosEntitlements '<key>com\.apple\.developer\.default-data-protection</key>\s*\r?\n\s*<string>NSFileProtectionComplete</string>' "$product must protect iOS files while the device is locked."
+    $iosSceneDelegate = Read-WorkspaceFile "apps\$product\ios\Runner\SceneDelegate.swift"
+    Assert-Pattern $iosSceneDelegate 'UIScreen\.capturedDidChangeNotification' "$product must react to iOS screen-recording state."
+    Assert-Pattern $iosSceneDelegate 'sceneWillResignActive' "$product must hide content before an iOS app-switcher snapshot."
+
     $iosProject = Read-WorkspaceFile "apps\$product\ios\Runner.xcodeproj\project.pbxproj"
+    if (@([regex]::Matches($iosProject, '(?m)^\s*CODE_SIGN_ENTITLEMENTS\s*=\s*Runner/Runner\.entitlements;\s*$')).Count -ne 3) {
+        throw "Product boundary failed: $product must apply its iOS data-protection entitlement in Debug, Profile, and Release."
+    }
     $iosTargets = @(
         [regex]::Matches($iosProject, 'IPHONEOS_DEPLOYMENT_TARGET\s*=\s*([^;]+);') |
             ForEach-Object { $_.Groups[1].Value.Trim() }
@@ -120,16 +153,32 @@ foreach ($product in $products) {
             Assert-NoPattern $entitlements '<key>com\.apple\.security\.(?:cs\.allow-jit|cs\.disable-library-validation|get-task-allow)</key>' "$product macOS release must not contain debugging or library-validation bypass entitlements."
         }
     }
+    $macosWindow = Read-WorkspaceFile "apps\$product\macos\Runner\MainFlutterWindow.swift"
+    Assert-Pattern $macosWindow 'sharingType\s*=\s*\.none' "$product must request macOS window-capture exclusion."
 
     $windowsManifest = Read-WorkspaceFile "apps\$product\windows\runner\runner.exe.manifest"
     Assert-XmlDocument $windowsManifest "$product Windows runner manifest"
     Assert-Pattern $windowsManifest 'supportedOS Id="\{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a\}"' "$product must explicitly declare the Windows 10/11 compatibility family."
     Assert-Pattern $windowsManifest '<requestedExecutionLevel level="asInvoker" uiAccess="false"\s*/>' "$product must not request Windows elevation or UIAccess."
+
+    $windowsRunner = Read-WorkspaceFile "apps\$product\windows\runner\win32_window.cpp"
+    Assert-Pattern $windowsRunner 'SetWindowDisplayAffinity\(window, WDA_EXCLUDEFROMCAPTURE\)' "$product must request Windows capture exclusion."
+    Assert-Pattern $windowsRunner 'SetWindowDisplayAffinity\(window, WDA_MONITOR\)' "$product must retain the older-Windows capture fallback."
+    $windowsCmake = Read-WorkspaceFile "apps\$product\windows\runner\CMakeLists.txt"
+    Assert-Pattern $windowsCmake '/guard:cf' "$product must enable Windows Control Flow Guard."
+
+    $linuxMain = Read-WorkspaceFile "apps\$product\linux\runner\main.cc"
+    Assert-Pattern $linuxMain 'setrlimit\(RLIMIT_CORE' "$product must disable Linux core dumps."
+    Assert-Pattern $linuxMain 'prctl\(PR_SET_DUMPABLE,\s*0' "$product must reject same-user process memory attachment on Linux."
+    $linuxCmake = Read-WorkspaceFile "apps\$product\linux\runner\CMakeLists.txt"
+    Assert-Pattern $linuxCmake '-fstack-protector-strong' "$product must enable Linux stack protection."
+    Assert-Pattern $linuxCmake '-Wl,-z,relro,-z,now' "$product must enable full Linux RELRO."
 }
 
 $consumerPubspec = Read-WorkspaceFile 'apps\everyday_chat\pubspec.yaml'
 $collabPubspec = Read-WorkspaceFile 'apps\secure_collab\pubspec.yaml'
 Assert-NoPattern $consumerPubspec '^\s{2}managed_compliance:' 'The privacy client must not depend on managed-recovery code.'
+Assert-NoPattern $consumerPubspec '^\s{2}collab_documents:' 'The privacy client must not depend on paid collaborative-document code.'
 Assert-NoPattern $collabPubspec '^\s{2}managed_compliance:' 'Secure Collab must not depend on escrow or managed-recovery code.'
 
 $consumerLib = Join-Path $workspaceRoot 'apps\everyday_chat\lib'
@@ -151,6 +200,7 @@ Assert-NoPattern $collabSources 'managedRecoverable|ManagedRecovery|managed_comp
 $rootPubspec = Read-WorkspaceFile 'pubspec.yaml'
 Assert-NoPattern $rootPubspec 'packages/managed_compliance' 'The removed managed-compliance package must not remain in the workspace.'
 Assert-Pattern $rootPubspec 'packages/key_transparency' 'The key-transparency package must remain in the workspace.'
+Assert-Pattern $rootPubspec 'packages/collab_documents' 'The collaborative-document security package must remain in the workspace.'
 
 $productionRoots = @(
     (Join-Path $workspaceRoot 'apps\everyday_chat\lib'),

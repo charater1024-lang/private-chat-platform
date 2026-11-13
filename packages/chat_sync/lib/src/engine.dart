@@ -186,6 +186,14 @@ final class ChatSyncEngine {
   Future<void> _mutationTail = Future<void>.value();
   bool _cycleRunning = false;
   bool _stopRequested = false;
+  bool _terminalPersistenceFault = false;
+
+  /// True after a durable write returned an indeterminate failure.
+  ///
+  /// The process cannot safely distinguish a pre-commit failure from a commit
+  /// whose acknowledgement was lost. Callers must discard this engine and
+  /// restore from the durable store before performing or observing more work.
+  bool get hasTerminalPersistenceFault => _terminalPersistenceFault;
 
   Future<OutboxEntrySnapshot> enqueue({
     required ConversationId conversationId,
@@ -286,6 +294,7 @@ final class ChatSyncEngine {
 
   Future<OutboxStatus?> outboxStatus(ClientMessageId clientMessageId) async {
     await _mutationTail;
+    _requirePersistenceAvailable();
     for (final entry in _state.outbox) {
       if (entry.message.clientMessageId == clientMessageId) {
         return entry.status;
@@ -301,6 +310,7 @@ final class ChatSyncEngine {
       throw ArgumentError.value(limit, 'limit', 'must be between 1 and 1000');
     }
     await _mutationTail;
+    _requirePersistenceAvailable();
     final selectedConversations = <String>{};
     final deliverable = <InboundCiphertextEvent>[];
     for (final event in _state.inbox) {
@@ -399,6 +409,7 @@ final class ChatSyncEngine {
 
   Future<SyncDiagnostics> diagnostics() async {
     await _mutationTail;
+    _requirePersistenceAvailable();
     int count(OutboxStatus status) =>
         _state.outbox.where((entry) => entry.status == status).length;
     return SyncDiagnostics(
@@ -437,20 +448,23 @@ final class ChatSyncEngine {
 
   Future<void> stop() async {
     _stopRequested = true;
-    await _mutate((current) {
-      if (current.connectionState == SyncConnectionState.stopped) {
-        return (next: null, value: null);
-      }
-      return (
-        next: current.copyWith(
-          connectionState: SyncConnectionState.stopped,
-          clearNextReconnectAt: true,
-          clearBlockedBy: true,
-        ),
-        value: null,
-      );
-    });
-    await _safeClose();
+    try {
+      await _mutate((current) {
+        if (current.connectionState == SyncConnectionState.stopped) {
+          return (next: null, value: null);
+        }
+        return (
+          next: current.copyWith(
+            connectionState: SyncConnectionState.stopped,
+            clearNextReconnectAt: true,
+            clearBlockedBy: true,
+          ),
+          value: null,
+        );
+      });
+    } finally {
+      await _safeClose();
+    }
   }
 
   Future<void> start() async {
@@ -490,6 +504,7 @@ final class ChatSyncEngine {
         'must be between 1 and 1000',
       );
     }
+    _requirePersistenceAvailable();
     if (_cycleRunning) throw const SyncOperationInProgressException();
     _cycleRunning = true;
     try {
@@ -1054,6 +1069,7 @@ final class ChatSyncEngine {
   ) {
     final predecessor = _mutationTail;
     final result = predecessor.then((_) async {
+      _requirePersistenceAvailable();
       late final _Mutation<T> mutation;
       try {
         mutation = operation(_state);
@@ -1071,6 +1087,10 @@ final class ChatSyncEngine {
           expectedGeneration: expectedGeneration,
         );
       } on Object {
+        // The store may have committed and then failed while advancing or
+        // confirming its protected head. Continuing from the old in-memory
+        // generation could duplicate work or wedge CAS forever.
+        _terminalPersistenceFault = true;
         throw const SyncPersistenceException();
       }
       _state = committed;
@@ -1081,6 +1101,10 @@ final class ChatSyncEngine {
       onError: (Object _, StackTrace _) {},
     );
     return result;
+  }
+
+  void _requirePersistenceAvailable() {
+    if (_terminalPersistenceFault) throw const SyncPersistenceException();
   }
 
   Future<void> _safeClose() async {

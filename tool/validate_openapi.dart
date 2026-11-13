@@ -21,6 +21,18 @@ const _expectedRoutes = <String, Map<String, String>>{
     'get': 'synchronizeEncryptedMessages',
     'post': 'appendMessageEnvelope',
   },
+  '/v1/documents': <String, String>{
+    'get': 'listDocuments',
+    'post': 'createDocument',
+  },
+  '/v1/documents/{document_id}': <String, String>{'get': 'getDocument'},
+  '/v1/documents/{document_id}/events': <String, String>{
+    'get': 'synchronizeEncryptedDocumentEvents',
+    'post': 'appendEncryptedDocumentEvent',
+  },
+  '/v1/documents/{document_id}/permission-transitions': <String, String>{
+    'post': 'transitionDocumentPermissions',
+  },
   '/v1/push/wakeups': <String, String>{'post': 'enqueueOpaqueWakeup'},
   '/v1/media/uploads': <String, String>{'post': 'initiateEncryptedMediaUpload'},
   '/v1/media/uploads/{upload_id}': <String, String>{
@@ -59,6 +71,33 @@ const _encryptedOnlyFields = <String>{
   'mime_type',
   'content_key',
   'base_nonce',
+  'document_title',
+  'document_body',
+  'document_comment',
+  'causal_heads',
+  'version_head',
+  'change_hash',
+};
+
+const _forbiddenPublicDocumentPropertyNames = <String>{
+  'title',
+  'documenttitle',
+  'body',
+  'documentbody',
+  'comment',
+  'comments',
+  'filename',
+  'mimetype',
+  'contentkey',
+  'causalhead',
+  'causalheads',
+  'versionhead',
+  'versionheads',
+  'changehash',
+  'snapshot',
+  'snapshotbytes',
+  'snapshotreference',
+  'mediaobjectreference',
 };
 
 const _forbiddenPublicMediaPropertyNames = <String>{
@@ -110,8 +149,8 @@ void main(List<String> arguments) {
     _fail('The contract must use OpenAPI 3.1.0.');
   }
   final info = _requiredMap(root, 'info');
-  if (info['version'] != '0.7.0') {
-    _fail('The contract version must be 0.7.0.');
+  if (info['version'] != '0.8.0') {
+    _fail('The contract version must be 0.8.0.');
   }
 
   _validateForbiddenLanguage(source);
@@ -131,6 +170,7 @@ void main(List<String> arguments) {
   final headers = _requiredMap(components, 'headers');
   _validateTrueE2eeBoundary(root, schemas);
   _validateConversationAndMessageSemantics(paths, schemas);
+  _validateCollaborativeDocumentSemantics(root, paths, schemas, parameters);
   _validateRegistrationCredential(paths, schemas, headers);
   _validateEncryptedMediaSemantics(root, paths, schemas, parameters, headers);
   _validateKeyTransparencySemantics(paths, schemas);
@@ -139,7 +179,7 @@ void main(List<String> arguments) {
   _rejectPublicMediaMetadataProperties(schemas);
 
   stdout.writeln(
-    'OpenAPI v0.7 no-escrow contract validated: ${paths.length} routes, '
+    'OpenAPI v0.8 no-escrow contract validated: ${paths.length} routes, '
     '${operationIds.length} operations, ${schemas.length} schemas, '
     '${references.length} local references.',
   );
@@ -187,13 +227,13 @@ void _validateRegistrationCredential(
   _requireCanonicalBase64UrlBytes(
     _requiredMap(requestProperties, 'client_nonce'),
     encodedLength: 43,
-    pattern: r'^[A-Za-z0-9_-]{42}[AQgw]$',
+    pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
     name: 'AcceptInvitationRequest.client_nonce',
   );
   _requireCanonicalBase64UrlBytes(
     _requiredMap(requestProperties, 'proof_of_possession'),
     encodedLength: 86,
-    pattern: r'^[A-Za-z0-9_-]{85}[AEIMQUYcgkosw048]$',
+    pattern: r'^[A-Za-z0-9_-]{85}[AQgw]$',
     name: 'AcceptInvitationRequest.proof_of_possession',
   );
 
@@ -209,7 +249,7 @@ void _validateRegistrationCredential(
     _requireCanonicalBase64UrlBytes(
       _requiredMap(keyProperties, field),
       encodedLength: 43,
-      pattern: r'^[A-Za-z0-9_-]{42}[AQgw]$',
+      pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
       name: 'DevicePublicKeys.$field',
     );
   }
@@ -412,7 +452,9 @@ void _validateTrueE2eeBoundary(YamlMap root, YamlMap schemas) {
         privateFields.whereType<String>().toSet(),
         _encryptedOnlyFields,
       )) {
-    _fail('x-e2ee-encrypted-only-fields must contain the four exact fields.');
+    _fail(
+      'x-e2ee-encrypted-only-fields must contain the exact reviewed fields.',
+    );
   }
 }
 
@@ -627,6 +669,780 @@ void _validateConversationAndMessageSemantics(YamlMap paths, YamlMap schemas) {
     '#/components/schemas/SynchronizedEncryptedMessage',
     'EncryptedMessagePage.messages.items',
   );
+}
+
+void _validateCollaborativeDocumentSemantics(
+  YamlMap root,
+  YamlMap paths,
+  YamlMap schemas,
+  YamlMap parameters,
+) {
+  final invariants = root['x-security-invariants'];
+  if (invariants is! YamlList) {
+    _fail('x-security-invariants must be a list.');
+  }
+  final invariantText = invariants.whereType<String>().join('\n').toLowerCase();
+  for (final phrase in const <String>{
+    'every active member may create a secure_collab document',
+    'document title, body, comments, causal heads, version heads, change hashes',
+    'document identifiers, event data, hashes, heads, permission epochs, and edit timing are never submitted on-chain',
+  }) {
+    if (!invariantText.contains(phrase)) {
+      _fail('Collaborative-document invariant is missing: $phrase.');
+    }
+  }
+
+  final documentIdParameter = _requiredMap(parameters, 'DocumentId');
+  if (documentIdParameter['name'] != 'document_id' ||
+      documentIdParameter['in'] != 'path' ||
+      documentIdParameter['required'] != true) {
+    _fail('DocumentId must be the required document_id path parameter.');
+  }
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(documentIdParameter, 'schema'),
+    encodedLength: 43,
+    pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
+    name: 'DocumentId',
+  );
+
+  final listDocuments = _requiredOperation(paths, '/v1/documents', 'get');
+  final createDocument = _requiredOperation(paths, '/v1/documents', 'post');
+  final getDocument = _requiredOperation(
+    paths,
+    '/v1/documents/{document_id}',
+    'get',
+  );
+  final syncEvents = _requiredOperation(
+    paths,
+    '/v1/documents/{document_id}/events',
+    'get',
+  );
+  final appendEvent = _requiredOperation(
+    paths,
+    '/v1/documents/{document_id}/events',
+    'post',
+  );
+  final transitionPermissions = _requiredOperation(
+    paths,
+    '/v1/documents/{document_id}/permission-transitions',
+    'post',
+  );
+  final documentOperations = <YamlMap>[
+    listDocuments,
+    createDocument,
+    getDocument,
+    syncEvents,
+    appendEvent,
+    transitionPermissions,
+  ];
+  for (final operation in documentOperations) {
+    _requireBearerAuthentication(operation, 'collaborative-document operation');
+  }
+  _requireExactParameterReferences(listDocuments, const {
+    '#/components/parameters/PageCursor',
+    '#/components/parameters/PageLimit',
+  }, 'listDocuments');
+  _requireExactParameterReferences(createDocument, const {
+    '#/components/parameters/IdempotencyKey',
+  }, 'createDocument');
+  _requireExactParameterReferences(getDocument, const {
+    '#/components/parameters/DocumentId',
+  }, 'getDocument');
+  _requireExactParameterReferences(syncEvents, const {
+    '#/components/parameters/DocumentId',
+    '#/components/parameters/SyncCursor',
+    '#/components/parameters/PageLimit',
+  }, 'synchronizeEncryptedDocumentEvents');
+  for (final entry in <(YamlMap, String)>[
+    (appendEvent, 'appendEncryptedDocumentEvent'),
+    (transitionPermissions, 'transitionDocumentPermissions'),
+  ]) {
+    _requireExactParameterReferences(entry.$1, const {
+      '#/components/parameters/DocumentId',
+      '#/components/parameters/IdempotencyKey',
+    }, entry.$2);
+  }
+
+  _requireRequestReference(
+    createDocument,
+    'application/json',
+    '#/components/schemas/CreateDocumentRequest',
+  );
+  _requireResponseReference(
+    createDocument,
+    '201',
+    'application/json',
+    '#/components/schemas/DocumentCreatedReceipt',
+  );
+  _requireResponseReference(
+    listDocuments,
+    '200',
+    'application/json',
+    '#/components/schemas/DocumentPage',
+  );
+  _requireResponseReference(
+    getDocument,
+    '200',
+    'application/json',
+    '#/components/schemas/DocumentRecord',
+  );
+  _requireResponseReference(
+    syncEvents,
+    '200',
+    'application/json',
+    '#/components/schemas/EncryptedDocumentEventPage',
+  );
+  _requireRequestReference(
+    appendEvent,
+    'application/json',
+    '#/components/schemas/AppendDocumentEventRequest',
+  );
+  _requireResponseReference(
+    appendEvent,
+    '202',
+    'application/json',
+    '#/components/schemas/DocumentEventWriteReceipt',
+  );
+  _requireRequestReference(
+    transitionPermissions,
+    'application/json',
+    '#/components/schemas/TransitionDocumentPermissionsRequest',
+  );
+  _requireResponseReference(
+    transitionPermissions,
+    '200',
+    'application/json',
+    '#/components/schemas/DocumentPermissionTransitionReceipt',
+  );
+
+  final createDescription = createDocument['description'];
+  if (createDescription is! String ||
+      !createDescription.contains('Every ACTIVE member') ||
+      !createDescription.contains('initial') ||
+      !createDescription.contains('ADMIN') ||
+      !createDescription.contains('no title')) {
+    _fail(
+      'Document creation must preserve active-member creation and no-plaintext semantics.',
+    );
+  }
+  final appendDescription = appendEvent['description'];
+  if (appendDescription is! String ||
+      !appendDescription.contains('coarse current-role') ||
+      !appendDescription.contains('Every receiving client independently') ||
+      !appendDescription.contains('encrypted-media service')) {
+    _fail(
+      'Document append must document server/client authorization and encrypted snapshots.',
+    );
+  }
+  final transitionDescription = transitionPermissions['description'];
+  if (transitionDescription is! String ||
+      !transitionDescription.contains('Current ADMIN only') ||
+      !transitionDescription.contains('exactly current_permission_epoch + 1') ||
+      !transitionDescription.contains('no server-side content decryption')) {
+    _fail(
+      'Document permission transitions must document monotonic client-verified authorization.',
+    );
+  }
+
+  final role = _requiredSchema(schemas, 'DocumentRole');
+  if (role['type'] != 'string') {
+    _fail('DocumentRole must be a string enum.');
+  }
+  _requireExactStringList(role, 'enum', const {
+    'VIEWER',
+    'COMMENTER',
+    'SUGGESTOR',
+    'EDITOR',
+    'ADMIN',
+  }, 'DocumentRole');
+  final memberPermission = _requiredSchema(schemas, 'DocumentMemberPermission');
+  _requireClosedObject(memberPermission, 'DocumentMemberPermission');
+  _requireExactRequiredAndProperties(memberPermission, const {
+    'member_ref',
+    'role',
+  }, 'DocumentMemberPermission');
+  _requireReference(
+    _requiredMap(_requiredMap(memberPermission, 'properties'), 'role'),
+    '#/components/schemas/DocumentRole',
+    'DocumentMemberPermission.role',
+  );
+  _requireBoundedString(
+    _requiredMap(memberPermission, 'properties'),
+    'member_ref',
+    16,
+    128,
+  );
+
+  final create = _requiredSchema(schemas, 'CreateDocumentRequest');
+  _requireClosedAllOf(create, 'CreateDocumentRequest');
+  _requireReference(
+    (create['allOf']! as YamlList).first as YamlMap,
+    '#/components/schemas/CreateBinding',
+    'CreateDocumentRequest binding',
+  );
+  final createBody = _allOfObject(create);
+  const createFields = <String>{
+    'product_kind',
+    'document_id',
+    'member_permissions',
+  };
+  _requireExactRequiredAndProperties(
+    createBody,
+    createFields,
+    'CreateDocumentRequest body',
+  );
+  final createProperties = _requiredMap(createBody, 'properties');
+  _requireConst(createProperties, 'product_kind', 'SECURE_COLLAB');
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(createProperties, 'document_id'),
+    encodedLength: 43,
+    pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
+    name: 'CreateDocumentRequest.document_id',
+  );
+  _requireDocumentPermissionArray(
+    _requiredMap(createProperties, 'member_permissions'),
+    minimum: null,
+    maximum: 499,
+    name: 'CreateDocumentRequest.member_permissions',
+  );
+
+  final record = _requiredSchema(schemas, 'DocumentRecord');
+  _requireClosedObject(record, 'DocumentRecord');
+  const recordFields = <String>{
+    'document_id',
+    'security_domain_id',
+    'product_kind',
+    'mode',
+    'policy_version',
+    'permission_epoch',
+    'member_permissions',
+    'resource_version',
+    'created_at',
+  };
+  _requireExactRequiredAndProperties(record, recordFields, 'DocumentRecord');
+  final recordProperties = _requiredMap(record, 'properties');
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(recordProperties, 'document_id'),
+    encodedLength: 43,
+    pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
+    name: 'DocumentRecord.document_id',
+  );
+  _requireConst(recordProperties, 'product_kind', 'SECURE_COLLAB');
+  _requireConst(recordProperties, 'mode', 'TRUE_E2EE');
+  _requireIntegerBounds(
+    _requiredMap(recordProperties, 'permission_epoch'),
+    1,
+    9007199254740991,
+    'DocumentRecord.permission_epoch',
+  );
+  _requireDocumentPermissionArray(
+    _requiredMap(recordProperties, 'member_permissions'),
+    minimum: 1,
+    maximum: 500,
+    name: 'DocumentRecord.member_permissions',
+  );
+
+  final page = _requiredSchema(schemas, 'DocumentPage');
+  _requireClosedObject(page, 'DocumentPage');
+  _requireExactRequired(page, const {'documents'}, 'DocumentPage');
+  _requireExactPropertyNames(page, const {
+    'documents',
+    'next_cursor',
+  }, 'DocumentPage');
+  final documents = _requiredMap(_requiredMap(page, 'properties'), 'documents');
+  if (documents['type'] != 'array' || documents['maxItems'] != 100) {
+    _fail('DocumentPage.documents must be bounded to 100 records.');
+  }
+  _requireReference(
+    _requiredMap(documents, 'items'),
+    '#/components/schemas/DocumentRecord',
+    'DocumentPage.documents.items',
+  );
+
+  final appendRequest = _requiredSchema(schemas, 'AppendDocumentEventRequest');
+  final appendAllOf = appendRequest['allOf'];
+  if (appendRequest['unevaluatedProperties'] != false ||
+      appendAllOf is! YamlList ||
+      appendAllOf.length != 1 ||
+      appendAllOf.single is! YamlMap) {
+    _fail('AppendDocumentEventRequest must close one envelope reference.');
+  }
+  _requireReference(
+    appendAllOf.single as YamlMap,
+    '#/components/schemas/TrueE2eeDocumentEventEnvelope',
+    'AppendDocumentEventRequest',
+  );
+
+  final envelope = _requiredSchema(schemas, 'TrueE2eeDocumentEventEnvelope');
+  _requireClosedAllOf(envelope, 'TrueE2eeDocumentEventEnvelope');
+  _requireReference(
+    (envelope['allOf']! as YamlList).first as YamlMap,
+    '#/components/schemas/WriteBinding',
+    'TrueE2eeDocumentEventEnvelope binding',
+  );
+  final envelopeBody = _allOfObject(envelope);
+  const envelopeFields = <String>{
+    'product_kind',
+    'protocol_domain',
+    'client_event_id',
+    'sender_member_ref',
+    'sender_device_ref',
+    'permission_epoch',
+    'device_sequence',
+    'mls_epoch',
+    'event_kind',
+    'cipher_suite',
+    'ciphertext',
+    'signature_algorithm',
+    'device_signature',
+  };
+  _requireExactRequiredAndProperties(
+    envelopeBody,
+    envelopeFields,
+    'TrueE2eeDocumentEventEnvelope body',
+  );
+  final envelopeProperties = _requiredMap(envelopeBody, 'properties');
+  _requireConst(envelopeProperties, 'product_kind', 'SECURE_COLLAB');
+  _requireConst(
+    envelopeProperties,
+    'protocol_domain',
+    'SECURE_COLLAB_DOCUMENT_EVENT_V1',
+  );
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(envelopeProperties, 'client_event_id'),
+    encodedLength: 22,
+    pattern: r'^[A-Za-z0-9_-]{21}[AQgw]$',
+    name: 'TrueE2eeDocumentEventEnvelope.client_event_id',
+  );
+  for (final field in const <String>{
+    'sender_member_ref',
+    'sender_device_ref',
+  }) {
+    _requireBoundedString(envelopeProperties, field, 16, 128);
+  }
+  for (final field in const <String>{'permission_epoch', 'device_sequence'}) {
+    _requireIntegerBounds(
+      _requiredMap(envelopeProperties, field),
+      1,
+      9007199254740991,
+      'TrueE2eeDocumentEventEnvelope.$field',
+    );
+  }
+  _requireIntegerBounds(
+    _requiredMap(envelopeProperties, 'mls_epoch'),
+    1,
+    9007199254740991,
+    'TrueE2eeDocumentEventEnvelope.mls_epoch',
+  );
+  _requireReference(
+    _requiredMap(envelopeProperties, 'event_kind'),
+    '#/components/schemas/DocumentEventKind',
+    'TrueE2eeDocumentEventEnvelope.event_kind',
+  );
+  final documentEventKind = _requiredSchema(schemas, 'DocumentEventKind');
+  if (documentEventKind['type'] != 'string') {
+    _fail('DocumentEventKind must be a string enum.');
+  }
+  _requireExactStringList(documentEventKind, 'enum', const {
+    'CONTENT_CHANGE',
+    'COMMENT_CHANGE',
+    'SUGGESTION_CHANGE',
+    'SNAPSHOT_REFERENCE',
+  }, 'DocumentEventKind');
+  _requireReference(
+    _requiredMap(envelopeProperties, 'cipher_suite'),
+    '#/components/schemas/DocumentCipherSuite',
+    'TrueE2eeDocumentEventEnvelope.cipher_suite',
+  );
+  final documentCipherSuite = _requiredSchema(schemas, 'DocumentCipherSuite');
+  if (documentCipherSuite.length != 2 ||
+      documentCipherSuite['type'] != 'string' ||
+      documentCipherSuite['const'] != 'MLS_1_0') {
+    _fail('DocumentCipherSuite must be the single MLS_1_0 constant.');
+  }
+  final documentCiphertext = _requiredMap(envelopeProperties, 'ciphertext');
+  _requireDocumentCiphertext(
+    documentCiphertext,
+    'TrueE2eeDocumentEventEnvelope.ciphertext',
+  );
+  final ciphertextDescription = documentCiphertext['description'];
+  if (ciphertextDescription is! String) {
+    _fail('Document event ciphertext must document encrypted-only content.');
+  }
+  final normalizedCiphertextDescription = ciphertextDescription
+      .toLowerCase()
+      .replaceAll(RegExp(r'\s+'), ' ');
+  for (final phrase in const <String>{
+    'document title/body',
+    'comments',
+    'causal and version heads',
+    'change hashes',
+    'snapshot references',
+    'filenames',
+    'mime types',
+    'content keys',
+    'only inside',
+  }) {
+    if (!normalizedCiphertextDescription.contains(phrase)) {
+      _fail('Document event ciphertext must keep $phrase encrypted-only.');
+    }
+  }
+  _requireConst(envelopeProperties, 'signature_algorithm', 'ED25519');
+  _requireEd25519Signature(
+    _requiredMap(envelopeProperties, 'device_signature'),
+    'TrueE2eeDocumentEventEnvelope.device_signature',
+  );
+
+  final synchronized = _requiredSchema(
+    schemas,
+    'SynchronizedEncryptedDocumentEvent',
+  );
+  _requireClosedAllOf(synchronized, 'SynchronizedEncryptedDocumentEvent');
+  final synchronizedAllOf = synchronized['allOf']! as YamlList;
+  _requireReference(
+    synchronizedAllOf.first as YamlMap,
+    '#/components/schemas/TrueE2eeDocumentEventEnvelope',
+    'SynchronizedEncryptedDocumentEvent envelope',
+  );
+  final synchronizedBody = _allOfObject(synchronized);
+  _requireExactRequiredAndProperties(synchronizedBody, const {
+    'server_event_id',
+    'document_sequence',
+  }, 'SynchronizedEncryptedDocumentEvent server metadata');
+  final synchronizedProperties = _requiredMap(synchronizedBody, 'properties');
+  _requireBoundedString(synchronizedProperties, 'server_event_id', 16, 128);
+  _requireIntegerBounds(
+    _requiredMap(synchronizedProperties, 'document_sequence'),
+    1,
+    9007199254740991,
+    'SynchronizedEncryptedDocumentEvent.document_sequence',
+  );
+
+  final eventPage = _requiredSchema(schemas, 'EncryptedDocumentEventPage');
+  _requireClosedObject(eventPage, 'EncryptedDocumentEventPage');
+  _requireExactRequiredAndProperties(eventPage, const {
+    'events',
+    'next_sync_cursor',
+    'has_more',
+  }, 'EncryptedDocumentEventPage');
+  final eventItems = _requiredMap(
+    _requiredMap(eventPage, 'properties'),
+    'events',
+  );
+  if (eventItems['type'] != 'array' || eventItems['maxItems'] != 100) {
+    _fail('EncryptedDocumentEventPage.events must be bounded to 100 events.');
+  }
+  _requireReference(
+    _requiredMap(eventItems, 'items'),
+    '#/components/schemas/SynchronizedEncryptedDocumentEvent',
+    'EncryptedDocumentEventPage.events.items',
+  );
+
+  final mutation = _requiredSchema(schemas, 'DocumentPermissionMutation');
+  _requireClosedObject(mutation, 'DocumentPermissionMutation');
+  _requireExactRequired(mutation, const {
+    'member_ref',
+    'operation',
+  }, 'DocumentPermissionMutation');
+  _requireExactPropertyNames(mutation, const {
+    'member_ref',
+    'operation',
+    'role',
+  }, 'DocumentPermissionMutation');
+  final mutationProperties = _requiredMap(mutation, 'properties');
+  _requireExactStringList(
+    _requiredMap(mutationProperties, 'operation'),
+    'enum',
+    const {'GRANT_OR_CHANGE', 'REMOVE'},
+    'DocumentPermissionMutation.operation',
+  );
+  _requireReference(
+    _requiredMap(mutationProperties, 'role'),
+    '#/components/schemas/DocumentRole',
+    'DocumentPermissionMutation.role',
+  );
+  final mutationAlternatives = mutation['oneOf'];
+  if (mutationAlternatives is! YamlList ||
+      mutationAlternatives.length != 2 ||
+      mutationAlternatives[0] is! YamlMap ||
+      mutationAlternatives[1] is! YamlMap) {
+    _fail('DocumentPermissionMutation must separate grant and removal shapes.');
+  }
+  final grant = mutationAlternatives[0] as YamlMap;
+  final removal = mutationAlternatives[1] as YamlMap;
+  final grantRequired = grant['required'];
+  if (grantRequired is! YamlList ||
+      !_sameSet(grantRequired.whereType<String>().toSet(), const {'role'}) ||
+      _requiredMap(_requiredMap(grant, 'properties'), 'operation')['const'] !=
+          'GRANT_OR_CHANGE' ||
+      _requiredMap(_requiredMap(removal, 'properties'), 'operation')['const'] !=
+          'REMOVE' ||
+      _requiredMap(removal, 'properties')['role'] != false) {
+    _fail('Document permission grants require a role and removals forbid one.');
+  }
+
+  final transition = _requiredSchema(
+    schemas,
+    'TransitionDocumentPermissionsRequest',
+  );
+  _requireClosedAllOf(transition, 'TransitionDocumentPermissionsRequest');
+  _requireReference(
+    (transition['allOf']! as YamlList).first as YamlMap,
+    '#/components/schemas/WriteBinding',
+    'TransitionDocumentPermissionsRequest binding',
+  );
+  final transitionBody = _allOfObject(transition);
+  const transitionFields = <String>{
+    'product_kind',
+    'protocol_domain',
+    'client_transition_id',
+    'sender_member_ref',
+    'sender_device_ref',
+    'current_permission_epoch',
+    'next_permission_epoch',
+    'device_sequence',
+    'mls_epoch',
+    'permission_change',
+    'authorization_ciphertext',
+    'signature_algorithm',
+    'device_signature',
+  };
+  _requireExactRequiredAndProperties(
+    transitionBody,
+    transitionFields,
+    'TransitionDocumentPermissionsRequest body',
+  );
+  final transitionProperties = _requiredMap(transitionBody, 'properties');
+  _requireConst(transitionProperties, 'product_kind', 'SECURE_COLLAB');
+  _requireConst(
+    transitionProperties,
+    'protocol_domain',
+    'SECURE_COLLAB_DOCUMENT_PERMISSION_V1',
+  );
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(transitionProperties, 'client_transition_id'),
+    encodedLength: 22,
+    pattern: r'^[A-Za-z0-9_-]{21}[AQgw]$',
+    name: 'TransitionDocumentPermissionsRequest.client_transition_id',
+  );
+  for (final field in const <String>{
+    'sender_member_ref',
+    'sender_device_ref',
+  }) {
+    _requireBoundedString(transitionProperties, field, 16, 128);
+  }
+  _requireIntegerBounds(
+    _requiredMap(transitionProperties, 'current_permission_epoch'),
+    1,
+    9007199254740990,
+    'TransitionDocumentPermissionsRequest.current_permission_epoch',
+  );
+  _requireIntegerBounds(
+    _requiredMap(transitionProperties, 'next_permission_epoch'),
+    2,
+    9007199254740991,
+    'TransitionDocumentPermissionsRequest.next_permission_epoch',
+  );
+  _requireIntegerBounds(
+    _requiredMap(transitionProperties, 'device_sequence'),
+    1,
+    9007199254740991,
+    'TransitionDocumentPermissionsRequest.device_sequence',
+  );
+  _requireIntegerBounds(
+    _requiredMap(transitionProperties, 'mls_epoch'),
+    1,
+    9007199254740991,
+    'TransitionDocumentPermissionsRequest.mls_epoch',
+  );
+  _requireReference(
+    _requiredMap(transitionProperties, 'permission_change'),
+    '#/components/schemas/DocumentPermissionMutation',
+    'TransitionDocumentPermissionsRequest.permission_change',
+  );
+  _requireDocumentCiphertext(
+    _requiredMap(transitionProperties, 'authorization_ciphertext'),
+    'TransitionDocumentPermissionsRequest.authorization_ciphertext',
+  );
+  _requireConst(transitionProperties, 'signature_algorithm', 'ED25519');
+  _requireEd25519Signature(
+    _requiredMap(transitionProperties, 'device_signature'),
+    'TransitionDocumentPermissionsRequest.device_signature',
+  );
+
+  _validateDocumentReceipts(schemas);
+  _rejectPublicDocumentProperties(schemas, const {
+    'CreateDocumentRequest',
+    'DocumentRecord',
+    'DocumentPage',
+    'TrueE2eeDocumentEventEnvelope',
+    'SynchronizedEncryptedDocumentEvent',
+    'EncryptedDocumentEventPage',
+    'DocumentPermissionMutation',
+    'TransitionDocumentPermissionsRequest',
+    'DocumentCreatedReceipt',
+    'DocumentEventWriteReceipt',
+    'DocumentPermissionTransitionReceipt',
+  });
+}
+
+void _validateDocumentReceipts(YamlMap schemas) {
+  final created = _requiredSchema(schemas, 'DocumentCreatedReceipt');
+  _requireClosedObject(created, 'DocumentCreatedReceipt');
+  _requireExactRequiredAndProperties(created, const {
+    'document_id',
+    'receipt_ref',
+    'permission_epoch',
+    'resource_version',
+    'accepted_at',
+  }, 'DocumentCreatedReceipt');
+  final createdProperties = _requiredMap(created, 'properties');
+  _requireCanonicalBase64UrlBytes(
+    _requiredMap(createdProperties, 'document_id'),
+    encodedLength: 43,
+    pattern: r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$',
+    name: 'DocumentCreatedReceipt.document_id',
+  );
+  _requireConst(createdProperties, 'permission_epoch', 1);
+
+  final eventReceipt = _requiredSchema(schemas, 'DocumentEventWriteReceipt');
+  _requireClosedObject(eventReceipt, 'DocumentEventWriteReceipt');
+  _requireExactRequiredAndProperties(eventReceipt, const {
+    'receipt_ref',
+    'server_event_id',
+    'document_sequence',
+    'resource_version',
+    'accepted_at',
+  }, 'DocumentEventWriteReceipt');
+  _requireIntegerBounds(
+    _requiredMap(_requiredMap(eventReceipt, 'properties'), 'document_sequence'),
+    1,
+    9007199254740991,
+    'DocumentEventWriteReceipt.document_sequence',
+  );
+
+  final permissionReceipt = _requiredSchema(
+    schemas,
+    'DocumentPermissionTransitionReceipt',
+  );
+  _requireClosedObject(
+    permissionReceipt,
+    'DocumentPermissionTransitionReceipt',
+  );
+  _requireExactRequiredAndProperties(permissionReceipt, const {
+    'receipt_ref',
+    'permission_epoch',
+    'resource_version',
+    'accepted_at',
+  }, 'DocumentPermissionTransitionReceipt');
+  _requireIntegerBounds(
+    _requiredMap(
+      _requiredMap(permissionReceipt, 'properties'),
+      'permission_epoch',
+    ),
+    2,
+    9007199254740991,
+    'DocumentPermissionTransitionReceipt.permission_epoch',
+  );
+}
+
+void _requireDocumentPermissionArray(
+  YamlMap schema, {
+  required int? minimum,
+  required int maximum,
+  required String name,
+}) {
+  if (schema['type'] != 'array' ||
+      schema['maxItems'] != maximum ||
+      schema['uniqueItems'] != true ||
+      (minimum != null && schema['minItems'] != minimum) ||
+      (minimum == null && schema.containsKey('minItems'))) {
+    _fail('$name must retain its exact bounded unique-array shape.');
+  }
+  _requireReference(
+    _requiredMap(schema, 'items'),
+    '#/components/schemas/DocumentMemberPermission',
+    '$name.items',
+  );
+}
+
+void _requireDocumentCiphertext(YamlMap schema, String name) {
+  if (schema['type'] != 'string' ||
+      schema['minLength'] != 2 ||
+      schema['maxLength'] != 1398102 ||
+      schema['pattern'] !=
+          r'^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$') {
+    _fail(
+      '$name must be canonical unpadded base64url capped at one MiB decoded.',
+    );
+  }
+}
+
+void _requireEd25519Signature(YamlMap schema, String name) {
+  _requireCanonicalBase64UrlBytes(
+    schema,
+    encodedLength: 86,
+    pattern: r'^[A-Za-z0-9_-]{85}[AQgw]$',
+    name: name,
+  );
+}
+
+void _requireBearerAuthentication(YamlMap operation, String name) {
+  final security = operation['security'];
+  if (security is! YamlList ||
+      security.length != 1 ||
+      security.single is! YamlMap) {
+    _fail('$name must require exactly one bearerAuth policy.');
+  }
+  final policy = security.single as YamlMap;
+  final scopes = policy['bearerAuth'];
+  if (policy.length != 1 || scopes is! YamlList || scopes.isNotEmpty) {
+    _fail('$name must require bearerAuth without OAuth scopes.');
+  }
+}
+
+void _requireExactParameterReferences(
+  YamlMap operation,
+  Set<String> expected,
+  String name,
+) {
+  final parameters = operation['parameters'];
+  if (parameters is! YamlList || parameters.length != expected.length) {
+    _fail('$name must declare the exact reviewed parameter set.');
+  }
+  final actual = _parameterReferences(operation);
+  if (!_sameSet(actual, expected)) {
+    _fail('$name has a missing or unexpected parameter.');
+  }
+}
+
+void _rejectPublicDocumentProperties(YamlMap schemas, Set<String> schemaNames) {
+  void visit(Object? value, String location) {
+    if (value is YamlMap) {
+      final properties = value['properties'];
+      if (properties is YamlMap) {
+        for (final key in properties.keys.whereType<String>()) {
+          final normalized = key.toLowerCase().replaceAll(RegExp(r'[-_]'), '');
+          if (_forbiddenPublicDocumentPropertyNames.contains(normalized)) {
+            _fail(
+              'Forbidden public document property $key found at $location.',
+            );
+          }
+        }
+      }
+      for (final entry in value.entries) {
+        visit(entry.value, '$location/${entry.key}');
+      }
+    } else if (value is YamlList) {
+      for (var index = 0; index < value.length; index += 1) {
+        visit(value[index], '$location/$index');
+      }
+    }
+  }
+
+  for (final name in schemaNames) {
+    visit(_requiredSchema(schemas, name), '#/components/schemas/$name');
+  }
 }
 
 void _validateEncryptedMediaSemantics(
@@ -1037,7 +1853,7 @@ void _validateKeyTransparencySemantics(YamlMap paths, YamlMap schemas) {
   if (digest['type'] != 'string' ||
       digest['minLength'] != 43 ||
       digest['maxLength'] != 43 ||
-      digest['pattern'] != r'^[A-Za-z0-9_-]{42}[AQgw]$') {
+      digest['pattern'] != r'^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$') {
     _fail('Sha256Base64Url must be a canonical 43-character digest schema.');
   }
 

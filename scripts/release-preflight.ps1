@@ -194,6 +194,10 @@ function Test-AndroidManifest {
     if ($application.GetAttribute('allowBackup', $androidNamespace) -cne 'false') {
         Add-Blocker -Code 'android-backup' -App $App -Message 'Android backup must remain disabled until encrypted backup semantics are designed.'
     }
+    if ($application.GetAttribute('dataExtractionRules', $androidNamespace) -cne '@xml/data_extraction_rules' -or
+        $application.GetAttribute('fullBackupContent', $androidNamespace) -cne '@xml/backup_rules') {
+        Add-Blocker -Code 'android-backup-policy' -App $App -Message 'Android must bind both current and legacy sensitive-data backup exclusion policies.'
+    }
     if ($application.GetAttribute('usesCleartextTraffic', $androidNamespace) -cne 'false' -or
         $application.HasAttribute('networkSecurityConfig', $androidNamespace)) {
         Add-Blocker -Code 'android-network-security' -App $App -Message 'Android must reject cleartext traffic and must not add an unaudited network security override.'
@@ -275,6 +279,13 @@ function Test-AppleNetworkPolicy {
         if (@($unsafeValues | Where-Object { $_.LocalName -ceq 'true' }).Count -gt 0) {
             Add-Blocker -Code 'apple-network-security' -App $App -Message "Apple transport security must not enable $unsafeKey."
         }
+    }
+
+    $localNetworkDescriptions = @(Get-PlistValues -Root $rootDictionaries[0] -Key 'NSLocalNetworkUsageDescription')
+    if ($localNetworkDescriptions.Count -ne 1 -or
+        $localNetworkDescriptions[0].LocalName -cne 'string' -or
+        [string]::IsNullOrWhiteSpace($localNetworkDescriptions[0].InnerText)) {
+        Add-Blocker -Code 'apple-local-network-privacy' -App $App -Message 'iOS must explain why it connects to a user-selected LAN home server.'
     }
 }
 
@@ -363,7 +374,7 @@ if ($SelfTest) {
     $safeAndroid = @'
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
   <uses-permission android:name="android.permission.INTERNET"/>
-  <application android:allowBackup="false" android:usesCleartextTraffic="false"/>
+  <application android:allowBackup="false" android:dataExtractionRules="@xml/data_extraction_rules" android:fullBackupContent="@xml/backup_rules" android:usesCleartextTraffic="false"/>
 </manifest>
 '@
     $safeSigning = @'
@@ -399,6 +410,7 @@ buildTypes {
   <dict>
     <key>NSAppTransportSecurity</key>
     <dict><key>NSAllowsArbitraryLoads</key><false/></dict>
+    <key>NSLocalNetworkUsageDescription</key><string>Connect to the selected home server.</string>
   </dict>
 </plist>
 '@
@@ -510,6 +522,24 @@ foreach ($app in $apps) {
             } else {
                 $platformIdentifiers['android'][$app.Name] = $applicationIdMatch.Groups[1].Value
             }
+            if ($activity -notmatch 'WindowManager\.LayoutParams\.FLAG_SECURE') {
+                Add-Blocker -Code 'android-screen-capture' -App $app.Name -Message 'Android must set FLAG_SECURE before rendering conversation content.'
+            }
+        }
+        foreach ($policyFile in @('backup_rules.xml', 'data_extraction_rules.xml')) {
+            $policyPath = "$($app.Root)/android/app/src/main/res/xml/$policyFile"
+            $policy = Read-WorkspaceFile -RelativePath $policyPath
+            try {
+                [void] ([xml] $policy)
+            } catch {
+                Add-Blocker -Code 'android-backup-policy' -App $app.Name -Message "$policyFile is missing or invalid XML."
+                continue
+            }
+            foreach ($domain in @('root', 'file', 'database', 'sharedpref', 'external')) {
+                if ($policy -notmatch "<exclude\s+domain=`"$domain`"\s+path=`"\.`"\s*/>") {
+                    Add-Blocker -Code 'android-backup-policy' -App $app.Name -Message "$policyFile must exclude the complete $domain domain."
+                }
+            }
         }
     }
 
@@ -523,6 +553,14 @@ foreach ($app in $apps) {
         } else {
             Add-Blocker -Code 'linux-identity' -App $app.Name -Message 'Linux APPLICATION_ID is missing.'
         }
+        $linuxRunnerCmake = Read-WorkspaceFile -RelativePath "$($app.Root)/linux/runner/CMakeLists.txt"
+        $linuxMain = Read-WorkspaceFile -RelativePath "$($app.Root)/linux/runner/main.cc"
+        if ($linuxRunnerCmake -notmatch '-fstack-protector-strong' -or
+            $linuxRunnerCmake -notmatch '-Wl,-z,relro,-z,now' -or
+            $linuxMain -notmatch 'setrlimit\(RLIMIT_CORE' -or
+            $linuxMain -notmatch 'prctl\(PR_SET_DUMPABLE,\s*0') {
+            Add-Blocker -Code 'linux-runtime-hardening' -App $app.Name -Message 'Linux release must enable native exploit mitigations and disable dumps/ptrace attachment.'
+        }
     }
 
     if ($Platform -eq 'all' -or $Platform -eq 'windows') {
@@ -530,6 +568,13 @@ foreach ($app in $apps) {
         $windows = Read-WorkspaceFile -RelativePath $windowsPath
         Test-PlaceholderIdentifier -App $app.Name -RelativePath $windowsPath -Content $windows
         Test-WindowsManifest -App $app.Name -Content (Read-WorkspaceFile -RelativePath "$($app.Root)/windows/runner/runner.exe.manifest")
+        $windowsRunnerCmake = Read-WorkspaceFile -RelativePath "$($app.Root)/windows/runner/CMakeLists.txt"
+        $windowsWindow = Read-WorkspaceFile -RelativePath "$($app.Root)/windows/runner/win32_window.cpp"
+        if ($windowsRunnerCmake -notmatch '/guard:cf' -or
+            $windowsWindow -notmatch 'SetWindowDisplayAffinity\(window, WDA_EXCLUDEFROMCAPTURE\)' -or
+            $windowsWindow -notmatch 'SetWindowDisplayAffinity\(window, WDA_MONITOR\)') {
+            Add-Blocker -Code 'windows-runtime-hardening' -App $app.Name -Message 'Windows release must enable CFG and request current plus legacy capture protection.'
+        }
         $windowsProject = Read-WorkspaceFile -RelativePath "$($app.Root)/windows/CMakeLists.txt"
         $windowsBinary = [regex]::Match($windowsProject, '(?m)^set\(BINARY_NAME\s+["'']([^"'']+)["'']\)\s*$')
         if ($windowsBinary.Success) {
@@ -547,6 +592,17 @@ foreach ($app in $apps) {
         Test-PlaceholderIdentifier -App $app.Name -RelativePath $iosPath -Content $ios
         Test-AppleSigning -App $app.Name -Platform 'iOS' -Content "$ios`n$iosReleaseConfig"
         Test-AppleNetworkPolicy -App $app.Name -Content (Read-WorkspaceFile -RelativePath "$($app.Root)/ios/Runner/Info.plist")
+        $iosEntitlements = Read-WorkspaceFile -RelativePath "$($app.Root)/ios/Runner/Runner.entitlements"
+        $iosSceneDelegate = Read-WorkspaceFile -RelativePath "$($app.Root)/ios/Runner/SceneDelegate.swift"
+        if ($iosEntitlements -notmatch '<key>com\.apple\.developer\.default-data-protection</key>\s*<string>NSFileProtectionComplete</string>' -or
+            @([regex]::Matches($ios, '(?m)^\s*CODE_SIGN_ENTITLEMENTS\s*=\s*Runner/Runner\.entitlements;\s*$')).Count -ne 3) {
+            Add-Blocker -Code 'ios-data-protection' -App $app.Name -Message 'All iOS app configurations must use complete default file protection.'
+        }
+        if ($iosSceneDelegate -notmatch 'UIScreen\.capturedDidChangeNotification' -or
+            $iosSceneDelegate -notmatch 'sceneWillResignActive' -or
+            $iosSceneDelegate -notmatch 'privacyShield') {
+            Add-Blocker -Code 'ios-screen-privacy' -App $app.Name -Message 'iOS must cover content in app-switcher snapshots and while screen recording is active.'
+        }
         $iosIds = @(
             [regex]::Matches($ios, '(?m)PRODUCT_BUNDLE_IDENTIFIER\s*=\s*([^;]+);') |
                 ForEach-Object { $_.Groups[1].Value.Trim() } |
@@ -570,6 +626,10 @@ foreach ($app in $apps) {
         Test-PlaceholderIdentifier -App $app.Name -RelativePath $macosConfigPath -Content $macosConfig
         Test-AppleSigning -App $app.Name -Platform 'macOS' -Content "$macosProject`n$macosReleaseConfig"
         Test-MacosReleaseEntitlements -App $app.Name -Content (Read-WorkspaceFile -RelativePath "$($app.Root)/macos/Runner/Release.entitlements")
+        $macosWindow = Read-WorkspaceFile -RelativePath "$($app.Root)/macos/Runner/MainFlutterWindow.swift"
+        if ($macosWindow -notmatch 'sharingType\s*=\s*\.none') {
+            Add-Blocker -Code 'macos-screen-privacy' -App $app.Name -Message 'macOS must request window-capture exclusion.'
+        }
         $macosId = [regex]::Match($macosConfig, '(?m)^PRODUCT_BUNDLE_IDENTIFIER\s*=\s*(\S+)\s*$')
         if ($macosId.Success) {
             $platformIdentifiers['macos'][$app.Name] = $macosId.Groups[1].Value
@@ -589,6 +649,16 @@ if ($Product -eq 'all') {
             }
         }
     }
+}
+
+$backendProfile = Read-WorkspaceFile -RelativePath 'deploy/self-host/backend-profile.yaml'
+if ($backendProfile -match '(?m)^protocol:\s*matrix-reference\s*$' -and
+    $backendProfile -match '(?m)^application_backend:\s*false\s*$' -and
+    $backendProfile -match '(?m)^custom_v1_routed:\s*false\s*$' -and
+    $backendProfile -match '(?m)^release_eligible:\s*false\s*$') {
+    Add-Blocker -Code 'custom-backend-not-composed' -App 'workspace' -Message 'The hardened self-host stack is Matrix-only while the clients use custom /v1. A reviewed secure launcher, external key provider, rollback-resistant generation anchor, and /v1 gateway composition are required before release.'
+} elseif ($backendProfile -notmatch '(?m)^release_eligible:\s*true\s*$') {
+    Add-Blocker -Code 'backend-profile-invalid' -App 'workspace' -Message 'Backend release eligibility is missing or malformed.'
 }
 
 $result = [pscustomobject]@{

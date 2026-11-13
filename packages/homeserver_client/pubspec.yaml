@@ -10,10 +10,12 @@ resolution: workspace
 
 dependencies:
   chat_sync: ^0.1.0
+  crypto: ^3.0.7
+  secure_persistence: ^0.1.0
 
 dev_dependencies:
   chat_core: ^0.1.0
-  crypto: ^3.0.7
+  cryptography: ^2.9.0
   homeserver_runtime: ^0.1.0
   lints: ^6.0.0
   test: ^1.25.6

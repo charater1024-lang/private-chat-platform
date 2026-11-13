@@ -33,7 +33,7 @@ foreach ($line in Get-Content -LiteralPath $environmentPath) {
   $settings[$name] = $value
 }
 
-foreach ($required in @('MATRIX_SERVER_NAME', 'MATRIX_PUBLIC_HOST', 'CADDY_ACME_EMAIL', 'SYNAPSE_IMAGE', 'POSTGRES_IMAGE', 'CADDY_IMAGE')) {
+foreach ($required in @('MATRIX_SERVER_NAME', 'MATRIX_PUBLIC_HOST', 'CADDY_ACME_EMAIL', 'CADDY_BIND_IP', 'PUBLIC_EXPOSURE_ACK', 'SYNAPSE_IMAGE', 'POSTGRES_IMAGE', 'CADDY_IMAGE')) {
   if (-not $settings.ContainsKey($required) -or [string]::IsNullOrWhiteSpace($settings[$required])) {
     throw "Missing required .env setting: $required"
   }
@@ -41,6 +41,30 @@ foreach ($required in @('MATRIX_SERVER_NAME', 'MATRIX_PUBLIC_HOST', 'CADDY_ACME_
 
 if (($settings.Values -join "`n") -match 'REPLACE_|:latest(?:\s|$)') {
   throw '.env still contains a placeholder or moving latest image tag.'
+}
+
+foreach ($imageSetting in @('SYNAPSE_IMAGE', 'POSTGRES_IMAGE', 'CADDY_IMAGE')) {
+  if ($settings[$imageSetting] -notmatch '^[^@\s]+:[^@\s]+@sha256:[0-9a-fA-F]{64}$' -or
+      $settings[$imageSetting] -match ':latest@') {
+    throw "$imageSetting must contain an immutable tag and a full sha256 registry digest."
+  }
+}
+
+$bindAddress = $null
+if (-not [System.Net.IPAddress]::TryParse($settings['CADDY_BIND_IP'], [ref]$bindAddress) -or
+    $bindAddress.AddressFamily -ne [System.Net.Sockets.AddressFamily]::InterNetwork -or
+    $bindAddress.ToString() -cne $settings['CADDY_BIND_IP']) {
+  throw 'CADDY_BIND_IP must be one explicit IPv4 address; hostnames and wildcard syntax are rejected.'
+}
+
+$bindBytes = $bindAddress.GetAddressBytes()
+$isPrivateBind = [System.Net.IPAddress]::IsLoopback($bindAddress) -or
+  $bindBytes[0] -eq 10 -or
+  ($bindBytes[0] -eq 172 -and $bindBytes[1] -ge 16 -and $bindBytes[1] -le 31) -or
+  ($bindBytes[0] -eq 192 -and $bindBytes[1] -eq 168)
+if (-not $isPrivateBind -and
+    $settings['PUBLIC_EXPOSURE_ACK'] -cne 'I_ACCEPT_PUBLIC_INTERNET_EXPOSURE') {
+  throw 'A wildcard/public CADDY_BIND_IP requires PUBLIC_EXPOSURE_ACK=I_ACCEPT_PUBLIC_INTERNET_EXPOSURE.'
 }
 
 if ($settings['MATRIX_SERVER_NAME'] -ne $settings['MATRIX_PUBLIC_HOST']) {
@@ -154,6 +178,15 @@ try {
   [Environment]::SetEnvironmentVariable('SYNAPSE_REPORT_STATS', $previousReportStats, 'Process')
 }
 
+# The image generator may emit a long-lived shared-registration credential.
+# This profile provisions no public/shared-secret registration endpoint, so
+# remove the credential atomically before semantic validation or startup.
+& $docker.Source compose --project-directory $deployRoot --env-file $environmentPath -f $composePath run --rm --no-deps `
+  --entrypoint python synapse /etc/synapse/scrub_generated_config.py
+if ($LASTEXITCODE -ne 0) {
+  throw 'Failed to remove the generated shared-registration secret.'
+}
+
 & $docker.Source compose --project-directory $deployRoot --env-file $environmentPath -f $composePath run --rm --no-deps `
   --entrypoint python synapse -m synapse.config -c /data/homeserver.yaml `
   -c /etc/synapse/closed-private.yaml -c /run/secrets/synapse_database.yaml
@@ -163,4 +196,4 @@ if ($LASTEXITCODE -ne 0) {
 
 $databasePassword = $null
 
-Write-Host 'Bootstrap and Synapse configuration validation completed. Review the generated configuration before docker compose up -d.' -ForegroundColor Green
+Write-Host 'Bootstrap completed with shared-secret registration disabled. Review the generated configuration before docker compose up -d.' -ForegroundColor Green

@@ -1,9 +1,9 @@
 # ADR 0001: OpenMLS 기반 종단 간 암호화 프로토콜
 
-- 상태: 승인됨(구현 전)
+- 상태: 승인됨(구현 진행 중)
 - 결정일: 2026-09-03
 - 적용 대상: `everyday_chat`, `secure_collab`, 공용 클라이언트 코어와 개인 홈서버
-- 보안 표시 상태: **미구현. 현재 앱을 검증된 E2EE 메신저로 표시하거나 배포해서는 안 된다.**
+- 보안 표시 상태: **OpenMLS native prototype 구현, 제품 E2EE 미연결. 현재 앱을 검증된 E2EE 메신저로 표시하거나 배포해서는 안 된다.**
 
 ## 배경
 
@@ -15,9 +15,9 @@
 
 공용 E2EE 엔진은 [RFC 9420 Messaging Layer Security](https://www.rfc-editor.org/rfc/rfc9420.html)를 구현한 [OpenMLS](https://github.com/openmls/openmls)를 기반으로 한다.
 
-1. Rust 코어는 **정식 OpenMLS 0.9.0 이상**의 보안 검토가 끝난 정확한 버전 또는 전체 commit에 고정하고 `Cargo.lock`을 커밋한다. 취약 범위에 포함되는 `0.9.0-rc.1`을 비롯한 release candidate, 이동 가능한 tag, 부동 `main`/branch, 범위만 지정한 release 빌드는 허용하지 않는다.
+1. Rust 코어는 검토한 정식 **OpenMLS 0.9.2**와 호환 provider들을 정확한 registry 버전에 고정하고 `Cargo.lock`을 커밋한다. release candidate, 이동 가능한 tag, 부동 `main`/branch, 범위만 지정한 release 빌드는 허용하지 않는다.
 2. 앱이 소유하는 작은 Rust 어댑터가 OpenMLS를 감싸고, Flutter에는 좁은 FFI API만 노출한다. 장기 개인키, epoch secret, exporter secret은 가능한 한 Rust의 opaque handle 안에 유지한다.
-3. 첫 구현 암호군은 RFC 9420의 필수 구현 암호군인 `MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519`로 제한한다. 실험적 X-Wing 및 draft post-quantum 암호군은 활성화하지 않는다.
+3. 첫 구현 암호군은 구형 모바일 CPU에서도 일정한 소프트웨어 성능을 내는 `MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519`로 제한한다. 실험적 X-Wing 및 draft post-quantum 암호군은 활성화하지 않는다.
 4. **1:1 대화도 MLS 그룹**이다. 계정이 아니라 각 승인된 기기가 하나의 MLS client/leaf가 되며, 1:1 대화 그룹에는 두 사용자의 승인된 모든 기기가 들어간다. 단체 대화도 동일한 상태 머신을 사용한다.
 5. 개인 홈서버는 신뢰하지 않는 Delivery Service이다. 서버는 일회용 KeyPackage, Welcome/Commit과 암호화된 application message 및 파일 암호문만 보관·전달한다. 서버에는 그룹 secret이나 파일 키를 보내지 않는다.
 6. MLS credential 바이트만으로 사용자 신원을 신뢰하지 않는다. `key_transparency` 계층이 계정, 기기, Ed25519 서명키의 결합과 변경 이력을 검증한 뒤에만 기기를 그룹에 추가한다.
@@ -32,10 +32,18 @@
 대용량 payload를 MLS application message 하나에 넣지 않는다.
 
 - 파일마다 OS CSPRNG로 새로운 256-bit 키를 만든다.
-- 파일 본문은 [libsodium `crypto_secretstream_xchacha20poly1305`](https://doc.libsodium.org/secret-key_cryptography/secretstream)로 chunk 단위 인증 암호화한다.
+- 파일 본문은 독립적인 ChaCha20-Poly1305 chunk로 인증 암호화한다. 매 chunk의
+  nonce는 파일별 무작위 4-byte prefix와 big-endian 64-bit chunk index로 만들고,
+  format/version, security domain, conversation, client media ID, index/count와
+  길이를 canonical AAD에 결속한다. 각 nonce는 파일 key 아래에서 정확히 한 번만
+  사용한다.
 - 파일 키, 암호문 전체 해시, 평문 크기, MIME 유형, chunk 규격, 메시지·방 식별자를 하나의 descriptor로 만들고 MLS application message 안에서 암호화한다.
 - 홈서버에는 암호문과 최소한의 라우팅 메타데이터만 업로드한다. 다운로드 뒤 최종 tag와 해시가 모두 일치하기 전에는 파일을 성공으로 표시하거나 외부 프로그램에 전달하지 않는다.
-- Dart [`crypto`](https://pub.dev/packages/crypto) 패키지는 SHA 계열 해시 유틸리티일 뿐 E2EE 프로토콜이 아니므로 허용한다. Dart [`cryptography`](https://pub.dev/packages/cryptography)나 libsodium 프리미티브로 별도 ratchet/그룹 프로토콜을 작성하지 않는다.
+- Dart [`crypto`](https://pub.dev/packages/crypto) 패키지는 SHA 계열 해시
+  유틸리티일 뿐 E2EE 프로토콜이 아니므로 허용한다. Dart
+  [`cryptography`](https://pub.dev/packages/cryptography)는 이 bounded attachment
+  profile의 AEAD provider로만 허용하며, 이 프리미티브로 별도 ratchet/그룹
+  프로토콜을 작성하지 않는다.
 
 ## 현재 공개 Dart `openmls` 패키지를 채택하지 않는 이유
 
@@ -67,7 +75,10 @@ OpenMLS 공식 보안 권고는 0.9.0 미만에 다음 취약점이 존재하며
 
 ### Dart cryptography와 libsodium만 사용
 
-두 라이브러리는 검토된 프리미티브를 제공하지만 KeyPackage 수명, 다중 기기, ratchet 상태, skipped key 삭제, 그룹 membership Commit, FS와 PCS를 구현하지 않는다. attachment secretstream처럼 경계가 좁은 용도로만 사용한다.
+두 라이브러리는 검토된 프리미티브를 제공하지만 KeyPackage 수명, 다중 기기,
+ratchet 상태, skipped key 삭제, 그룹 membership Commit, FS와 PCS를 구현하지
+않는다. 독립 chunk attachment AEAD처럼 경계가 좁고 versioned AAD와 엄격한
+길이·순서 검증을 갖춘 용도로만 사용한다.
 
 ## 플랫폼과 라이선스
 
@@ -81,8 +92,13 @@ OpenMLS와 참고 wrapper는 MIT이며 현재 Apache-2.0 저장소와 결합 가
 
 다음 조건을 모두 충족하기 전에는 보안 완료, 감사 완료 또는 production-ready E2EE라고 표시하지 않는다.
 
-1. 현재 `scripts/validate-crypto-dependencies.ps1`는 인용·flow YAML과 전이 lock entry까지 보수적으로 검사해 hosted Dart `openmls` 및 승인되지 않은 Matrix/vodozemac/libsignal 경로를 거부한다. 아직 검토된 Rust ingestion workflow가 없으므로 모든 `Cargo.toml`, `Cargo.lock`, `.cargo/config*`도 fail-closed로 막는다.
-2. 앱 소유 bridge를 도입하는 변경은 위 차단을 먼저 완화해서는 안 된다. 같은 보안 검토에서 `cargo metadata --locked` 기반 allowlist, patch/replace·target/workspace dependency, registry/source replacement, checksum, license/SBOM과 native artifact provenance 검증을 추가한 뒤 OpenMLS의 정확한 source revision, `Cargo.lock`, Rust toolchain과 bridge generator를 고정한다. 자체 CI에서 release 바이너리를 빌드·서명하며 다운로드 artifact는 사용하지 않는다.
+1. `scripts/validate-crypto-dependencies.ps1`는 hosted Dart `openmls` 및 승인되지
+   않은 Matrix/vodozemac/libsignal 경로를 거부한다. Rust는 분리된
+   `native/openmls_bridge`와 `native/collab_crdt_bridge` 두 manifest만 허용하며,
+   OpenMLS 0.9.2, Automerge 0.12.0과 provider·codec 버전의 exact pin, registry
+   checksum, lock format, 비공개 package 설정을 검사한다. Git/path/workspace
+   의존성 및 `.cargo/config*` source replacement는 거부한다.
+2. `rust-toolchain.toml`은 Rust 1.91.0과 `rustfmt`/Clippy를 고정한다. `.github/workflows/native-crypto.yml`은 Linux, Windows, macOS에서 format, warning-free Clippy, 실제 MLS 상태 머신 테스트를 `--locked`로 실행한다. CI 성공은 서명된 앱용 native artifact, 모바일 빌드, SBOM 또는 독립 감사를 대신하지 않는다.
 3. [IETF MLS 구현·테스트 벡터 저장소](https://github.com/mlswg/mls-implementations)의 RFC 9420 벡터와 다른 구현 간 interoperability 테스트를 통과한다.
 4. 모든 비신뢰 byte parser를 지속 fuzzing하고 malformed Welcome, KeyPackage, Proposal, Commit, application message가 panic이나 과도한 CPU·메모리 사용을 만들지 않는지 검증한다.
 5. 1:1/그룹 생성, 오프라인 초대, replay, out-of-order, 동시 Commit, fork, 기기 제거·재가입, stale KeyPackage, 앱 강제 종료, 전원 손실, DB 손상·rollback, attachment 변조 테스트를 통과한다.
@@ -94,9 +110,11 @@ OpenMLS와 참고 wrapper는 MIT이며 현재 Apache-2.0 저장소와 결합 가
 
 두 제품은 하나의 검토 가능한 보안 코어와 메시지 형식을 공유할 수 있고, 1:1과 그룹 모두 표준화된 FS/PCS 상태 머신을 사용한다. 그 대가로 Matrix/Synapse와의 즉시 호환성을 포기하며, OpenMLS bridge와 Delivery Service ordering, credential 정책, 안전한 로컬 상태 저장을 이 프로젝트가 책임져야 한다.
 
-현재 저장소에는 loopback Delivery Service reference, 인증 HTTP transport,
-transactional sync와 독립 청크 AEAD attachment 실험이 있다. 그러나 이 실험은
-위에서 선택한 libsodium secretstream wire format이 아니며 앱 UI에도 연결되지
-않았다. 결정을 충족하는 정식 OpenMLS 0.9 이상 Rust bridge, MLS 상태의 암호화된 영속
-저장과 production gateway도 아직 없다. 이 ADR은 구현 완료 증명이 아니라,
-구현이 따라야 할 보안 기준과 release 차단 조건이다.
+현재 저장소에는 OpenMLS 0.9.2로 실제 그룹 생성, KeyPackage 검증, Welcome 참가,
+application message 암·복호화, replay·변조 거부와 pending Commit 순서를 시험하는
+앱 소유 Rust 상태 머신이 있다. Delivery Service runtime에는 실제 Ed25519 기기
+소유 증명, 인증 HTTP transport, transactional sync, 암호화 snapshot 경계와 독립
+청크 AEAD attachment 구현이 있다. 다만 OpenMLS 상태의 crash-safe 암호화 저장과
+FFI, 앱의 기본 실행 경로 연결, 모바일 interop/fuzz/실기기 시험, 외부 보안 감사는
+아직 release gate로 남아 있다. 현재 구현을 production-ready E2EE라고 표시해서는
+안 된다.

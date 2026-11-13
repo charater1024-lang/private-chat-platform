@@ -1,6 +1,6 @@
 # 구현 및 검증 로드맵
 
-상태: 완료 조건 기반, 2026-09-03
+상태: 완료 조건 기반, 2026-11-13
 
 임의 출시일보다 검증 증거를 우선한다. 두 앱은 별도로 배포하지만 같은 개인
 homeserver·`TRUE_E2EE`·no-escrow 불변식을 지킨다.
@@ -36,7 +36,7 @@ machine-readable contract와 threat model에 반영되는 것이다.
 - common domain, media, UI와 platform adapter package
 - Korean/English localization parity와 accessibility baseline
 - format, analyze, unit/widget test와 dependency/import boundary CI
-- Android/iOS/Windows/macOS unsigned build matrix
+- Android/iOS/Windows/Linux unsigned build matrix
 
 종료 조건은 두 앱을 독립 build/test할 수 있고 secret·production credential이
 source에 없는 것이다.
@@ -83,10 +83,16 @@ clock skew와 server restart를 포함한다.
 - 업무 profile, PC channel 중심 다중 panel과 shortcut
 - 모든 channel text·image·video·file의 같은 `TRUE_E2EE` pipeline
 - client-local channel search와 encrypted index
+- 별도 bounded CRDT stream의 E2EE 공동 문서, offline merge와 signed snapshot
+- 동시 cursor, 댓글·제안, encrypted version history와 Markdown/PDF export
 
 관리 role은 content key 접근을 만들지 않는다. Server-side plaintext search,
 숨은 bot과 운영자용 decrypt console은 범위 밖이다. `ACTIVE` 일반 member의
 1:1·group 생성은 owner의 방별 승인을 요구하지 않는다.
+
+공동 문서는 `docs/adr/0002-encrypted-collaborative-documents.md`의 permission
+epoch, device signature, MLS AAD와 rollback gate를 모두 통과해야 한다. Native
+CRDT prototype이나 local preview만으로 동시 편집 출시 완료를 주장하지 않는다.
 
 ## 6. Key transparency와 선택적 blockchain checkpoint
 
@@ -101,7 +107,7 @@ value, ID, leaf/proof와 timestamp가 chain payload에 나타나면 출시를 �
 
 ## 7. PC·운영·공급망
 
-- Windows/macOS tray, window restore, multi-window와 keyboard shortcut
+- Windows/Linux tray, window restore, multi-window와 keyboard shortcut
 - long-running multi-device soak, load·chaos와 disk-full test
 - encrypted backup restore, certificate/key compromise와 rollback drill
 - rate limit, abuse/reporting과 metadata-minimized observability
@@ -129,7 +135,7 @@ value, ID, leaf/proof와 timestamp가 chain payload에 나타나면 출시를 �
 
 ### Release candidate
 
-- Android, iOS, Windows와 macOS signed build
+- Android, iOS, Windows와 Linux signed build
 - 실제 기준 기기의 startup·scroll·memory·battery profile
 - official crypto vector, cross-client, parser fuzzing과 long offline sync
 - encrypted attachment corruption·resume·cleanup matrix
@@ -155,3 +161,4 @@ value, ID, leaf/proof와 timestamp가 chain payload에 나타나면 출시를 �
 5. key-transparency witness topology와 checkpoint version
 6. 선택적 chain adapter의 privacy·비용·운영 기준
 7. 정량 performance, battery, reliability와 accessibility budget
+8. 공동 문서 신규 참여자의 이력 공유 범위와 DOCX 변환 sandbox 정책

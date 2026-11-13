@@ -5,5 +5,7 @@ library;
 
 export 'src/ciphertext_frame.dart';
 export 'src/conversation_sync_controller.dart';
+export 'src/encrypted_file_prepared_request_store.dart';
 export 'src/http_transport.dart';
+export 'src/native_mls_bridge.dart';
 export 'src/prepared_request_store.dart';

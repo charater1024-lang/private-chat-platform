@@ -122,6 +122,42 @@ void main() {
     expect(find.textContaining('이 기기에만 저장됨'), findsOneWidget);
   });
 
+  testWidgets('message search stays on-device and filters the selected chat', (
+    tester,
+  ) async {
+    final sync = FakeMessageSync({'family'});
+    addTearDown(sync.close);
+    await tester.pumpWidget(EverydayChatApp(messageSync: sync));
+    await tester.tap(find.byKey(const ValueKey('conversation-0')));
+    await tester.pumpAndSettle();
+
+    await tester.tap(
+      find.byKey(const ValueKey('everyday-message-search-toggle')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('everyday-message-search-field')),
+      '퇴근',
+    );
+    await tester.pump();
+
+    expect(find.text('좋아요! 퇴근하고 바로 갈게요.'), findsOneWidget);
+    expect(find.text('오늘 저녁 다 같이 먹을까요?'), findsNothing);
+    expect(sync.sentPlaintexts, isEmpty);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('everyday-message-search-field')),
+      '존재하지 않는 내용',
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('everyday-message-search-empty')),
+      findsOneWidget,
+    );
+  });
+
   testWidgets('configured homeserver sync sends text and reports delivery', (
     tester,
   ) async {

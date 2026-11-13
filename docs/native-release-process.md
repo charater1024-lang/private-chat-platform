@@ -39,6 +39,12 @@
    검증이 모두 통과한 뒤 SBOM을 생성하고 한 앱의 Flutter release compile을
    실행한다. 요청 버전이 선택 앱의 검토된 `pubspec.yaml` 버전과 다르면 빌드 전
    차단하며, 결과는 미배포 candidate일 뿐이다.
+5. 2026-11-13에 추가한 `.github/workflows/platform-build-smoke.yml`은 수동으로만
+   실행되는 read-only 디버그 컴파일 게이트다. 두 앱을 Android APK, Linux,
+   Windows와 iOS Simulator 대상으로 각각 컴파일하여 네이티브 프로젝트의 구조적
+   부패를 조기에 찾는다. signing secret을 읽거나 artifact를 업로드·배포하지
+   않으며, 성공하더라도 실제 기기 호환성·release signing·스토어 출시 준비를
+   증명하지 않는다.
 
 현재 preflight가 실패하는 것은 의도된 동작이다. 두 앱의 `com.example.*`
 identifier와 Apple development team이 실제 출시 주체 값으로 확정되지 않았기

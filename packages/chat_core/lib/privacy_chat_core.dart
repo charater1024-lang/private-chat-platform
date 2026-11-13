@@ -31,5 +31,6 @@ export 'src/homeserver_transport.dart'
         HomeserverTransport,
         PrivacyHomeserverTransport;
 export 'src/invitation_proof.dart';
+export 'src/local_message_features.dart';
 export 'src/product_policy.dart' show ProductKind;
 export 'src/security_domain.dart' show SecurityMode, SecurityDomain;

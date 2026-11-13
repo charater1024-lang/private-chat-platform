@@ -12,6 +12,8 @@ dependencies:
   chat_core: ^0.1.0
   chat_media: ^0.1.0
   crypto: ^3.0.7
+  cryptography: ^2.9.0
+  secure_persistence: ^0.1.0
 
 dev_dependencies:
   lints: ^6.0.0

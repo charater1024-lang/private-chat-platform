@@ -13,9 +13,12 @@ workspace:
   - packages/chat_media_picker
   - packages/chat_sync
   - packages/chat_ui
+  - packages/collab_documents
   - packages/homeserver_client
   - packages/homeserver_runtime
   - packages/key_transparency
+  - packages/product_entitlements
+  - packages/secure_persistence
 
 dev_dependencies:
   yaml: ^3.1.4

@@ -1,6 +1,6 @@
 # 백엔드 경계 계약
 
-상태: v0.7 reference vertical 구현, production persistence·E2EE 미구현, 2026-09-03
+상태: v0.8 contract/reference vertical, production persistence·E2EE 미연결, 2026-11-13
 
 기계 판독 계약은 [`contracts/chat-api.openapi.yaml`](../contracts/chat-api.openapi.yaml)에
 있다. 이 문서는 두 앱과 gateway가 지켜야 할 보안 의미를 설명한다. 현재
@@ -162,8 +162,10 @@ Transparency service는 signed checkpoint, inclusion proof와 consistency proof�
 - push와 chain adapter allowlist test
 - log·trace·metric의 plaintext, key, token과 raw ID 부재 검사
 
-현재 OpenAPI v0.7, loopback reference runtime, 인증 HTTP adapter와 동기화 코어는
+현재 OpenAPI v0.8, loopback reference runtime, 인증 HTTP adapter와 동기화 코어는
 일부 완료 조건을 실행 가능한 형태로 검증한다. runtime은 주입형 원자 snapshot과
 재시작 복구를 제공하고 두 앱은 구성된 outbound text를 동기화 경계에 연결한다.
-다만 공개 검토된 MLS 구현, 수신 복호화, 실제 OS keystore로 보호되는 운영 저장,
-production TLS gateway, 첨부 앱 연결, 실기기 시험과 독립 보안 review가 남아 있다.
+OpenMLS 0.9.2 native 상태 머신 source는 격리돼 있지만 public FFI, 수신 복호화
+앱 연결, 실제 OS keystore로 보호되는 운영 저장, 실제 TLS fixture, 첨부 앱 연결,
+실기기 시험과 독립 보안 review가 남아 있다. 공동 문서 route도 현재 contract-only로,
+homeserver runtime에서 제공하지 않는다.

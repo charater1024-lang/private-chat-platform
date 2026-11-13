@@ -1,0 +1,13 @@
+name: product_entitlements
+description: Fail-closed product entitlement policy that never paywalls security.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.13.2
+
+resolution: workspace
+
+dev_dependencies:
+  lints: ^6.1.0
+  test: ^1.31.1

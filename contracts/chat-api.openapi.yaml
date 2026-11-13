@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Personally Owned Closed Homeserver Chat API
-  version: 0.7.0
+  version: 0.8.0
   description: |
     Security-bound contract for Privacy Chat (PRIVACY_CONSUMER) and Secure
     Collab (SECURE_COLLAB). Both products use TRUE_E2EE on a personally owned,
@@ -11,6 +11,7 @@ x-security-invariants:
   - Both product kinds use TRUE_E2EE; the security mode cannot be changed.
   - Every installation is PERSONALLY_OWNED, CLOSED_HOMESERVER, invite-only, and non-federated.
   - Every ACTIVE member may create DIRECT and GROUP conversations without owner approval.
+  - Every ACTIVE member may create a SECURE_COLLAB document; its creator is the initial ADMIN.
   - DIRECT has one peer; GROUP has at least two peers; the authenticated creator is implicit.
   - Every participant belongs to the same homeserver and immutable security domain.
   - Inline message ciphertext is authenticated, opaque, and bounded to one MiB decoded.
@@ -18,13 +19,21 @@ x-security-invariants:
   - Filename, MIME type, content key, and base nonce exist only inside E2EE message ciphertext.
   - Media manifests expose no public or presigned URL.
   - Push payloads are short-lived opaque wake-up values without chat metadata.
+  - Document title, body, comments, causal heads, version heads, change hashes, attachment metadata, and snapshot references exist only inside bounded MLS ciphertext.
   - Key-transparency leaves and proofs remain off-chain.
   - An optional chain adapter receives only schema version, protocol domain, and a 32-byte aggregate checkpoint commitment.
+  - Document identifiers, event data, hashes, heads, permission epochs, and edit timing are never submitted on-chain.
 x-e2ee-encrypted-only-fields:
   - filename
   - mime_type
   - content_key
   - base_nonce
+  - document_title
+  - document_body
+  - document_comment
+  - causal_heads
+  - version_head
+  - change_hash
 x-media-ciphertext-budget:
   unit: bytes
   authentication_tags_included: true
@@ -39,6 +48,7 @@ tags:
   - name: Registration
   - name: Conversations
   - name: Messages
+  - name: Documents
   - name: Push
   - name: Encrypted media
   - name: Key transparency
@@ -351,6 +361,227 @@ paths:
                 $ref: '#/components/schemas/MessageWriteReceipt'
         '400':
           $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/documents:
+    get:
+      tags: [Documents]
+      operationId: listDocuments
+      summary: List opaque collaborative-document records visible to the member
+      description: |
+        Returns routing and coarse permission metadata only. Document title,
+        body, comments, attachment metadata, causal heads, and version history
+        remain inside MLS ciphertext held by participant devices.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PageCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Page of member-visible opaque document records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+    post:
+      tags: [Documents]
+      operationId: createDocument
+      summary: Create an opaque SECURE_COLLAB collaborative document
+      description: |
+        Every ACTIVE member may create a document and becomes its initial
+        ADMIN. The client generates a high-entropy opaque document identifier.
+        The request contains no title, body, comment, content key, filename,
+        MIME type, CRDT change, causal head, version head, or snapshot data.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateDocumentRequest'
+      responses:
+        '201':
+          description: Opaque document routing record created
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentCreatedReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/documents/{document_id}:
+    get:
+      tags: [Documents]
+      operationId: getDocument
+      summary: Read one opaque collaborative-document routing record
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+      responses:
+        '200':
+          description: Opaque document routing and permission metadata
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /v1/documents/{document_id}/events:
+    get:
+      tags: [Documents]
+      operationId: synchronizeEncryptedDocumentEvents
+      summary: Synchronize bounded opaque document-event ciphertext
+      description: |
+        Returns a bounded ordered page to a current document member. The
+        server does not parse CRDT changes, snapshots, comments, suggestions,
+        causal heads, version heads, encrypted-media references, or keys.
+        Receiving clients revalidate the device signature, permission epoch,
+        MLS epoch, device sequence, and authenticated coarse event kind before applying
+        any change.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/SyncCursor'
+        - $ref: '#/components/parameters/PageLimit'
+      responses:
+        '200':
+          description: Ordered encrypted document-event page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EncryptedDocumentEventPage'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Documents]
+      operationId: appendEncryptedDocumentEvent
+      summary: Append one signed bounded MLS document event
+      description: |
+        The server performs coarse current-role, authenticated event-kind, and
+        document-lifetime monotonic-sequence checks
+        but never decrypts the event. Every receiving client independently
+        verifies the signature, author role at permission_epoch, MLS epoch,
+        replay state, and document binding before applying it. Snapshot bytes
+        use the encrypted-media service; any object reference and content key
+        exist only inside this ciphertext. Exact idempotent replay is allowed,
+        while the same client_event_id with different bytes is rejected.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AppendDocumentEventRequest'
+      responses:
+        '202':
+          description: Signed encrypted document event accepted
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentEventWriteReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '412':
+          $ref: '#/components/responses/PreconditionFailed'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/PolicyRejected'
+
+  /v1/documents/{document_id}/permission-transitions:
+    post:
+      tags: [Documents]
+      operationId: transitionDocumentPermissions
+      summary: Apply one signed monotonic document-permission transition
+      description: |
+        Current ADMIN only. The server checks coarse role state and requires
+        next_permission_epoch to be exactly current_permission_epoch + 1.
+        Exactly one target member mutation is committed atomically per epoch.
+        Participant clients additionally verify the device signature and that
+        authorization_ciphertext binds the matching MLS membership transition.
+        ADMIN grants no server-side content decryption privilege.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/DocumentId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransitionDocumentPermissionsRequest'
+      responses:
+        '200':
+          description: Permission transition committed
+          headers:
+            ETag:
+              $ref: '#/components/headers/ResourceVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DocumentPermissionTransitionReceipt'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
         '412':
@@ -766,6 +997,16 @@ components:
         type: string
         minLength: 16
         maxLength: 128
+    DocumentId:
+      name: document_id
+      in: path
+      required: true
+      description: Canonical unpadded base64url encoding of a client-generated opaque 256-bit document reference.
+      schema:
+        type: string
+        minLength: 43
+        maxLength: 43
+        pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
     UploadId:
       name: upload_id
       in: path
@@ -958,7 +1199,7 @@ components:
       type: string
       minLength: 43
       maxLength: 43
-      pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+      pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
       description: Canonical unpadded base64url encoding of exactly 32 SHA-256 bytes.
 
     HomeserverProfile:
@@ -1233,13 +1474,13 @@ components:
               type: string
               minLength: 43
               maxLength: 43
-              pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+              pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
               description: Canonical unpadded base64url encoding of 32 random bytes.
             proof_of_possession:
               type: string
               minLength: 86
               maxLength: 86
-              pattern: '^[A-Za-z0-9_-]{85}[AEIMQUYcgkosw048]$'
+              pattern: '^[A-Za-z0-9_-]{85}[AQgw]$'
               writeOnly: true
               description: >-
                 Canonical unpadded base64url Ed25519 64-byte signature over the
@@ -1271,7 +1512,7 @@ components:
           type: string
           minLength: 43
           maxLength: 43
-          pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
           description: Canonical unpadded base64url encoding of 32 Ed25519 public-key bytes.
         agreement_algorithm:
           const: X25519
@@ -1279,7 +1520,7 @@ components:
           type: string
           minLength: 43
           maxLength: 43
-          pattern: '^[A-Za-z0-9_-]{42}[AQgw]$'
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
           description: Canonical unpadded base64url encoding of 32 X25519 public-key bytes.
 
     RegistrationReceipt:
@@ -1447,6 +1688,356 @@ components:
         archived:
           type: boolean
       description: Added members must already be ACTIVE on the same closed homeserver and domain.
+
+    DocumentRole:
+      type: string
+      enum: [VIEWER, COMMENTER, SUGGESTOR, EDITOR, ADMIN]
+      description: |
+        Coarse server-visible authorization role. Receiving clients still
+        verify every signed event against the role at its permission epoch.
+        ADMIN does not grant server-side decryption capability.
+
+    DocumentMemberPermission:
+      type: object
+      additionalProperties: false
+      required:
+        - member_ref
+        - role
+      properties:
+        member_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        role:
+          $ref: '#/components/schemas/DocumentRole'
+
+    CreateDocumentRequest:
+      allOf:
+        - $ref: '#/components/schemas/CreateBinding'
+        - type: object
+          required:
+            - product_kind
+            - document_id
+            - member_permissions
+          properties:
+            product_kind:
+              const: SECURE_COLLAB
+            document_id:
+              type: string
+              minLength: 43
+              maxLength: 43
+              pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+              description: Client-generated opaque 256-bit reference; never a title or content-derived value.
+            member_permissions:
+              type: array
+              maxItems: 499
+              uniqueItems: true
+              items:
+                $ref: '#/components/schemas/DocumentMemberPermission'
+              description: The authenticated creator is implicit as ADMIN and must not appear here.
+      unevaluatedProperties: false
+
+    DocumentRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - document_id
+        - security_domain_id
+        - product_kind
+        - mode
+        - policy_version
+        - permission_epoch
+        - member_permissions
+        - resource_version
+        - created_at
+      properties:
+        document_id:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+        security_domain_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        product_kind:
+          const: SECURE_COLLAB
+        mode:
+          const: TRUE_E2EE
+        policy_version:
+          type: string
+          minLength: 1
+          maxLength: 64
+        permission_epoch:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        member_permissions:
+          type: array
+          minItems: 1
+          maxItems: 500
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/DocumentMemberPermission'
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        created_at:
+          type: string
+          format: date-time
+      description: Contains routing and coarse authorization metadata only; all document content is MLS ciphertext.
+
+    DocumentPage:
+      type: object
+      additionalProperties: false
+      required:
+        - documents
+      properties:
+        documents:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/DocumentRecord'
+        next_cursor:
+          type: string
+          minLength: 16
+          maxLength: 128
+
+    DocumentCipherSuite:
+      type: string
+      const: MLS_1_0
+
+    DocumentEventKind:
+      type: string
+      description: Coarse authenticated authorization category; it contains no document content.
+      enum:
+        - CONTENT_CHANGE
+        - COMMENT_CHANGE
+        - SUGGESTION_CHANGE
+        - SNAPSHOT_REFERENCE
+
+    AppendDocumentEventRequest:
+      allOf:
+        - $ref: '#/components/schemas/TrueE2eeDocumentEventEnvelope'
+      unevaluatedProperties: false
+
+    TrueE2eeDocumentEventEnvelope:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - product_kind
+            - protocol_domain
+            - client_event_id
+            - sender_member_ref
+            - sender_device_ref
+            - permission_epoch
+            - device_sequence
+            - mls_epoch
+            - event_kind
+            - cipher_suite
+            - ciphertext
+            - signature_algorithm
+            - device_signature
+          properties:
+            product_kind:
+              const: SECURE_COLLAB
+            protocol_domain:
+              const: SECURE_COLLAB_DOCUMENT_EVENT_V1
+            client_event_id:
+              type: string
+              minLength: 22
+              maxLength: 22
+              pattern: '^[A-Za-z0-9_-]{21}[AQgw]$'
+            sender_member_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+            sender_device_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+            permission_epoch:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            device_sequence:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+              description: Strictly monotonic for this document and author device across the document lifetime; permission changes never reset it.
+            mls_epoch:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            event_kind:
+              $ref: '#/components/schemas/DocumentEventKind'
+            cipher_suite:
+              $ref: '#/components/schemas/DocumentCipherSuite'
+            ciphertext:
+              type: string
+              minLength: 2
+              maxLength: 1398102
+              pattern: '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$'
+              description: |
+                Unpadded base64url MLS application ciphertext capped at one
+                MiB decoded. CRDT changes, document title/body,
+                comments, suggestions, causal and version heads, change
+                hashes, encrypted-media snapshot references, filenames, MIME
+                types, and content keys exist only inside this value.
+            signature_algorithm:
+              const: ED25519
+            device_signature:
+              type: string
+              minLength: 86
+              maxLength: 86
+              pattern: '^[A-Za-z0-9_-]{85}[AQgw]$'
+              description: |
+                Signature over the canonical route document_id and every
+                security, epoch, author, sequence, event-kind, cipher-suite, and exact
+                ciphertext field in this request.
+      unevaluatedProperties: false
+
+    SynchronizedEncryptedDocumentEvent:
+      allOf:
+        - $ref: '#/components/schemas/TrueE2eeDocumentEventEnvelope'
+        - type: object
+          required:
+            - server_event_id
+            - document_sequence
+          properties:
+            server_event_id:
+              type: string
+              minLength: 16
+              maxLength: 128
+              description: Stable server-assigned identifier used for duplicate suppression.
+            document_sequence:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+              description: Stable one-based opaque relay ordering within this document.
+      unevaluatedProperties: false
+
+    EncryptedDocumentEventPage:
+      type: object
+      additionalProperties: false
+      required:
+        - events
+        - next_sync_cursor
+        - has_more
+      properties:
+        events:
+          type: array
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/SynchronizedEncryptedDocumentEvent'
+        next_sync_cursor:
+          type: string
+          minLength: 16
+          maxLength: 128
+        has_more:
+          type: boolean
+
+    DocumentPermissionMutation:
+      type: object
+      additionalProperties: false
+      required:
+        - member_ref
+        - operation
+      properties:
+        member_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        operation:
+          type: string
+          enum: [GRANT_OR_CHANGE, REMOVE]
+        role:
+          $ref: '#/components/schemas/DocumentRole'
+      oneOf:
+        - required: [role]
+          properties:
+            operation:
+              const: GRANT_OR_CHANGE
+        - properties:
+            operation:
+              const: REMOVE
+            role: false
+
+    TransitionDocumentPermissionsRequest:
+      allOf:
+        - $ref: '#/components/schemas/WriteBinding'
+        - type: object
+          required:
+            - product_kind
+            - protocol_domain
+            - client_transition_id
+            - sender_member_ref
+            - sender_device_ref
+            - current_permission_epoch
+            - next_permission_epoch
+            - device_sequence
+            - mls_epoch
+            - permission_change
+            - authorization_ciphertext
+            - signature_algorithm
+            - device_signature
+          properties:
+            product_kind:
+              const: SECURE_COLLAB
+            protocol_domain:
+              const: SECURE_COLLAB_DOCUMENT_PERMISSION_V1
+            client_transition_id:
+              type: string
+              minLength: 22
+              maxLength: 22
+              pattern: '^[A-Za-z0-9_-]{21}[AQgw]$'
+            sender_member_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+            sender_device_ref:
+              type: string
+              minLength: 16
+              maxLength: 128
+            current_permission_epoch:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740990
+            next_permission_epoch:
+              type: integer
+              minimum: 2
+              maximum: 9007199254740991
+            device_sequence:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+              description: Strictly monotonic for this document and author device across events and permission transitions; permission changes never reset it.
+            mls_epoch:
+              type: integer
+              minimum: 1
+              maximum: 9007199254740991
+            permission_change:
+              $ref: '#/components/schemas/DocumentPermissionMutation'
+            authorization_ciphertext:
+              type: string
+              minLength: 2
+              maxLength: 1398102
+              pattern: '^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$'
+              description: |
+                Unpadded base64url MLS ciphertext capped at one MiB decoded.
+                Clients require it to bind this coarse transition to the
+                matching MLS membership change without exposing group secrets.
+            signature_algorithm:
+              const: ED25519
+            device_signature:
+              type: string
+              minLength: 86
+              maxLength: 86
+              pattern: '^[A-Za-z0-9_-]{85}[AQgw]$'
+              description: Signature over the canonical route document_id and every transition field.
+      unevaluatedProperties: false
 
     MessageCipherSuite:
       type: string
@@ -2142,6 +2733,91 @@ components:
           type: string
           format: date-time
 
+    DocumentCreatedReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - document_id
+        - receipt_ref
+        - permission_epoch
+        - resource_version
+        - accepted_at
+      properties:
+        document_id:
+          type: string
+          minLength: 43
+          maxLength: 43
+          pattern: '^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$'
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        permission_epoch:
+          const: 1
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+
+    DocumentEventWriteReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - receipt_ref
+        - server_event_id
+        - document_sequence
+        - resource_version
+        - accepted_at
+      properties:
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        server_event_id:
+          type: string
+          minLength: 16
+          maxLength: 128
+        document_sequence:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+      description: Server event and sequence remain stable across an exact idempotent replay.
+
+    DocumentPermissionTransitionReceipt:
+      type: object
+      additionalProperties: false
+      required:
+        - receipt_ref
+        - permission_epoch
+        - resource_version
+        - accepted_at
+      properties:
+        receipt_ref:
+          type: string
+          minLength: 16
+          maxLength: 128
+        permission_epoch:
+          type: integer
+          minimum: 2
+          maximum: 9007199254740991
+        resource_version:
+          type: integer
+          minimum: 1
+          maximum: 9007199254740991
+        accepted_at:
+          type: string
+          format: date-time
+
     MessageWriteReceipt:
       type: object
       additionalProperties: false
@@ -2220,6 +2896,9 @@ components:
         - MEDIA_DIGEST_MISMATCH
         - MEDIA_UPLOAD_INCOMPLETE
         - PUSH_PAYLOAD_NOT_OPAQUE
+        - DOCUMENT_PERMISSION_EPOCH_STALE
+        - DOCUMENT_DEVICE_SEQUENCE_REPLAYED
+        - DOCUMENT_CIPHERTEXT_INVALID
         - KEY_TRANSPARENCY_PROOF_INVALID
         - KEY_TRANSPARENCY_CHECKPOINT_STALE
         - CHECKPOINT_ANCHOR_PAYLOAD_FORBIDDEN

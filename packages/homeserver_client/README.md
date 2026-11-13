@@ -1,5 +1,24 @@
 # homeserver_client
 
+Production HTTP bindings require `ProductionHomeserverTextProtectionPort`.
+`NativeMlsTextProtectionAdapter` defines the strict application-owned OpenMLS
+bridge boundary and refuses production readiness unless startup known-answer
+tests, RFC 9420 vectors, protected persistent state, device credential binding
+and an exact independent-review artifact digest are present. No Dart MLS
+fallback is provided.
+
+`EncryptedFilePreparedRequestStore` persists exact retry bytes with authenticated
+encryption and rollback detection. HTTPS uses platform trust by default and can
+add an exact SHA-256 leaf-certificate pin without weakening platform validation.
+The optional pin is checked during the TLS connection handshake, before an HTTP
+authorization header or body can be sent; the response certificate is checked
+again as defense in depth.
+
+The current unit test validates the exact leaf-DER SHA-256 matcher with
+synthetic bytes. A real TLS fixture has not yet demonstrated hostname/expiry,
+untrusted-CA and pin-mismatch rejection before authorization/body transmission
+on every supported platform; that evidence remains a release blocker.
+
 `homeserver_client` is the conversation-scoped HTTP boundary between
 `chat_sync` and `homeserver_runtime`. It authenticates requests, verifies the
 configured home-server identity and security profile, maps the runtime's
@@ -53,6 +72,13 @@ by opaque client message ID so an application can replace retry/queued labels
 with acknowledgement, blocked, or failed state without exposing message content
 or server receipts. A platform background scheduler is still required after the
 OS suspends or terminates the process.
+
+If a sync snapshot write has an indeterminate outcome, the coordinator discards
+the terminally faulted engine, reopens the durable store, and reconciles the
+same client message ID. It reuses a recovered queued row instead of encrypting a
+second logical send. If that exact row cannot be proven durable, the conversation
+enters a persistence-blocked state until the coordinator is rebuilt after
+storage repair; it does not offer a misleading failed/re-send path.
 
 The prepared request contains exact ciphertext-bearing POST bytes and the
 optimistic resource version. It is retained after a successful HTTP response

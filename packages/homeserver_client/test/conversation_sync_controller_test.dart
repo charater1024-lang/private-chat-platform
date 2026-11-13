@@ -130,7 +130,7 @@ void main() {
   );
 
   test(
-    'a failed scheduled cycle clears the scheduled delivery state',
+    'a failed scheduled cycle restores before scheduling another retry',
     () async {
       final clock = _ManualClock(DateTime.utc(2026, 9, 3));
       final scheduler = _ManualTimerScheduler(onFire: clock.advance);
@@ -159,19 +159,24 @@ void main() {
         HomeserverMessageDeliveryState.retryScheduled,
       );
 
-      final queuedUpdate = controller.deliveryUpdates.firstWhere(
-        (update) =>
-            update.deliveryState == HomeserverMessageDeliveryState.queued,
-      );
       store.failNextWrite = true;
       scheduler.fireNext();
-      await queuedUpdate;
+      for (
+        var attempt = 0;
+        attempt < 100 && scheduler.pendingCount == 0;
+        attempt += 1
+      ) {
+        await Future<void>.delayed(Duration.zero);
+      }
 
-      expect(scheduler.pendingCount, 0);
-      expect(updates.last.deliveryState, HomeserverMessageDeliveryState.queued);
+      expect(scheduler.pendingCount, 1);
+      expect(
+        updates.last.deliveryState,
+        HomeserverMessageDeliveryState.retryScheduled,
+      );
       expect(
         controller.presentation.connectionStatus,
-        HomeserverConnectionStatus.failed,
+        isNot(HomeserverConnectionStatus.failed),
       );
     },
   );
@@ -217,6 +222,106 @@ void main() {
 
       expect(transport.sent, hasLength(1));
       expect(controller.presentation.queuedCount, 0);
+    },
+  );
+
+  test(
+    'an indeterminate enqueue commit is recovered by the same message id',
+    () async {
+      final clock = _ManualClock(DateTime.utc(2026, 9, 3));
+      final scheduler = _ManualTimerScheduler(onFire: clock.advance);
+      final store = _MemorySyncStore()..commitThenFailAtExpectedGeneration = 0;
+      final transport = _RecordingTransport();
+      final protector = _RecordingProtector();
+      final controller = HomeserverMessageSyncCoordinator(
+        bindings: <HomeserverConversationBinding>[
+          _binding(
+            transport: transport,
+            protector: protector,
+            snapshotStore: store,
+          ),
+        ],
+        clock: clock.now,
+        timerFactory: scheduler.create,
+      );
+      addTearDown(controller.close);
+
+      final result = await controller.sendText(
+        localConversationId: 'local-family',
+        plaintext: 'recover the ambiguous durable enqueue',
+      );
+
+      expect(
+        result.deliveryState,
+        HomeserverMessageDeliveryState.retryScheduled,
+      );
+      expect(
+        result.clientMessageId,
+        ClientMessageId('client_message_00000001'),
+      );
+      expect(store._snapshot!.outbox, hasLength(1));
+      expect(
+        store._snapshot!.outbox.single.message.clientMessageId,
+        result.clientMessageId,
+      );
+      expect(protector.plaintexts, hasLength(1));
+      expect(transport.sent, isEmpty);
+      expect(scheduler.pendingCount, 1);
+
+      final acknowledged = controller.deliveryUpdates.firstWhere(
+        (update) =>
+            update.deliveryState == HomeserverMessageDeliveryState.acknowledged,
+      );
+      scheduler.fireNext();
+      await acknowledged;
+
+      expect(transport.sent, hasLength(1));
+      expect(transport.sent.single.clientMessageId, result.clientMessageId);
+      expect(protector.plaintexts, hasLength(1));
+    },
+  );
+
+  test(
+    'an unreconciled enqueue failure blocks later logical resends',
+    () async {
+      final store = _MemorySyncStore()..failAtExpectedGeneration = 0;
+      final transport = _RecordingTransport();
+      final protector = _RecordingProtector();
+      final controller = HomeserverMessageSyncCoordinator(
+        bindings: <HomeserverConversationBinding>[
+          _binding(
+            transport: transport,
+            protector: protector,
+            snapshotStore: store,
+          ),
+        ],
+      );
+      addTearDown(controller.close);
+
+      final first = await controller.sendText(
+        localConversationId: 'local-family',
+        plaintext: 'must not be encrypted twice',
+      );
+      final second = await controller.sendText(
+        localConversationId: 'local-family',
+        plaintext: 'must not be encrypted twice',
+      );
+
+      expect(first.deliveryState, HomeserverMessageDeliveryState.blocked);
+      expect(first.clientMessageId, ClientMessageId('client_message_00000001'));
+      expect(second.deliveryState, HomeserverMessageDeliveryState.blocked);
+      expect(second.clientMessageId, isNull);
+      expect(protector.plaintexts, hasLength(1));
+      expect(transport.sent, isEmpty);
+      expect(store._snapshot, isNull);
+      expect(
+        controller.presentation.connectionStatus,
+        HomeserverConnectionStatus.blocked,
+      );
+      expect(
+        controller.presentation.blockedBy,
+        SyncFailureKind.persistenceConflict,
+      );
     },
   );
 
@@ -628,6 +733,7 @@ final class _MemorySyncStore implements SyncSnapshotStore {
   SyncStateSnapshot? _snapshot;
   bool failNextWrite = false;
   int? failAtExpectedGeneration;
+  int? commitThenFailAtExpectedGeneration;
 
   @override
   Future<SyncStateSnapshot?> read() async => _snapshot == null
@@ -648,5 +754,9 @@ final class _MemorySyncStore implements SyncSnapshotStore {
       throw const SyncSnapshotConflictException();
     }
     _snapshot = SyncStateSnapshot.fromJson(snapshot.toJson());
+    if (commitThenFailAtExpectedGeneration == expectedGeneration) {
+      commitThenFailAtExpectedGeneration = null;
+      throw StateError('simulated indeterminate committed write');
+    }
   }
 }

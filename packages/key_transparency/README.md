@@ -22,6 +22,13 @@ be reviewed independently.
 - A closed blockchain adapter port whose input can be created only from a
   successful monitor result and contains only schema/domain plus one 32-byte
   commitment to the signed checkpoint and verified witness artifacts.
+- A maintained `cryptography`-backed Ed25519 verifier with an immutable,
+  domain-separated public-key allow-list. Unknown keys, substituted algorithms,
+  malformed signatures and crypto-provider failures fail closed.
+- An optional EVM adapter that sends only the anchor's final 32-byte digest to
+  an external wallet and verifies chain ID, contract, exact calldata, pinned
+  runtime bytecode, successful receipt, digest event, canonical block,
+  confirmation depth and independent RPC agreement before returning a receipt.
 - Redacted incidental diagnostics and strict range, precision, and byte checks.
 
 ## Security boundary
@@ -44,14 +51,19 @@ and exchange signed checkpoints and witness receipts off-chain.
 of scope. In particular, `SHA-256(username)` is generally guessable and is **not**
 a privacy-preserving commitment. Use a separately specified and reviewed
 commitment/VRF construction. This package also does not implement encryption,
-key generation, private-key storage, signing algorithms, identity verification,
-transport, gossip, witness operation, or smart contracts.
+private-key generation/storage/signing, identity verification, HTTP transport,
+gossip, witness operation, contract deployment or chain light-client consensus.
+The optional reviewed Solidity source lives at
+`../../contracts/blockchain/KeyTransparencyAnchor.sol`; it must be reproducibly
+compiled, deployed and bytecode-pinned by the release process.
 
-`DetachedSignatureVerifier` is a port, not a cryptographic implementation. A
-deployment must bind trusted operator and witness `(key ID, algorithm)` pairs to
-reviewed Ed25519 or ECDSA P-256 verification code, verify the operator signature,
-validate Merkle inclusion/consistency, and require an independently administered
-witness quorum before trusting a checkpoint or anchoring it.
+`DetachedSignatureVerifier` remains an extension port. This package supplies
+`Ed25519DetachedSignatureVerifier`, backed by `package:cryptography`, for the
+supported production Ed25519 path. ECDSA P-256 still requires a separately
+reviewed implementation. A deployment must bind trusted operator and witness
+`(key ID, algorithm)` pairs, validate Merkle inclusion/consistency, and require
+an independently administered witness quorum before trusting a checkpoint or
+anchoring it.
 
 `WitnessQuorumPolicy` requires an immutable mapping from every trusted witness
 key ID to exactly one allowed `SignatureAlgorithm`. The policy and monitor reject
@@ -74,6 +86,47 @@ quorum, freshness and checkpoint consistency checks. The explicit `toHex`,
 `toBase64Url`, and `toPublicFields` methods disclose their documented public
 digest/metadata values; the redaction guarantee applies to incidental `toString`
 diagnostics.
+
+## Optional EVM boundary
+
+`EvmCheckpointAnchorAdapter` delegates transaction construction, private-key
+custody, user authorization and signing to `EvmAnchorWalletPort`. The wallet is
+given only the configured chain, configured contract and a strongly typed
+32-byte `Sha256Digest`; the adapter never accepts a message, file, user ID,
+public key or encryption key as transaction data.
+
+`EvmCheckpointAnchorVerifier` does not trust the transaction hash returned by
+the wallet. It independently requires all of the following before it creates a
+`BlockchainAnchorReceipt`:
+
+- the RPC chain and protected transaction chain ID match the configured chain;
+- transaction and receipt target the configured lower-case contract and the
+  transaction input is exactly the expected 32-byte digest with zero value;
+- the receipt succeeded and contains exactly one non-removed anonymous log,
+  from that contract, whose only topic is the expected digest;
+- SHA-256 of the deployed runtime code at the receipt block matches the release
+  pin;
+- transaction, receipt, hash lookup and canonical block-number lookup agree on
+  the same block, with the configured confirmation depth; and
+- the configured RPC threshold agrees on block hash, number and timestamp.
+
+The production verifier requires 2-8 providers, a threshold of at least 2,
+and a unique bounded `EvmRpcProviderId` for every independently administered
+trust domain. Multiple endpoints operated by one provider must deliberately
+share one ID and therefore cannot be counted as independent quorum votes.
+
+Every RPC call has a 10 ms to 60 s configured timeout. Decoded values are
+limited by depth, node count, collection size and a 192 KiB cumulative string
+budget. `EvmJsonRpcPort` implementations must pass the raw body through
+`EvmJsonRpcResponseDecoder`, which caps it at `maximumEncodedResponseBytes`
+*before* JSON decoding and binds the JSON-RPC version and request ID. The
+transport must use authenticated HTTPS, reject redirects and avoid logging
+response or wallet data. Provider IDs are a fail-closed configuration check,
+not proof of corporate independence; operators must still verify control of
+each trust domain out of band. A
+colluding provider quorum can still invent a view; high-assurance deployments
+need a verified light client or independently witnessed finalized chain
+checkpoint.
 
 ## Minimal flow
 

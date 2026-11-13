@@ -5,6 +5,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:chat_sync/chat_sync.dart';
+import 'package:crypto/crypto.dart';
 
 import 'ciphertext_frame.dart';
 import 'prepared_request_store.dart';
@@ -42,6 +43,53 @@ final class PrivateBearerCredential {
   String toString() => 'PrivateBearerCredential(<redacted>)';
 }
 
+enum HomeserverTlsPeerPolicyKind { platformTrust, sha256LeafCertificatePin }
+
+/// TLS peer policy applied only after platform certificate validation.
+///
+/// Pinning never accepts an otherwise invalid certificate. The pin is the
+/// lowercase SHA-256 digest of the leaf certificate DER bytes and must be
+/// rotated explicitly before certificate renewal.
+final class HomeserverTlsPeerPolicy {
+  const HomeserverTlsPeerPolicy.platformTrust()
+    : kind = HomeserverTlsPeerPolicyKind.platformTrust,
+      _expectedSha256 = null;
+
+  factory HomeserverTlsPeerPolicy.pinnedLeafCertificateSha256(String digest) {
+    final normalized = digest.trim().toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(normalized)) {
+      throw ArgumentError.value(
+        '<redacted>',
+        'digest',
+        'must be a 64-character SHA-256 hexadecimal digest',
+      );
+    }
+    return HomeserverTlsPeerPolicy._(
+      HomeserverTlsPeerPolicyKind.sha256LeafCertificatePin,
+      normalized,
+    );
+  }
+
+  const HomeserverTlsPeerPolicy._(this.kind, this._expectedSha256);
+
+  final HomeserverTlsPeerPolicyKind kind;
+  final String? _expectedSha256;
+
+  bool acceptsLeafDer(Uint8List der) {
+    if (kind == HomeserverTlsPeerPolicyKind.platformTrust) return true;
+    final observed = sha256.convert(der).toString();
+    final expected = _expectedSha256!;
+    var difference = observed.length ^ expected.length;
+    for (var index = 0; index < observed.length; index += 1) {
+      difference |= observed.codeUnitAt(index) ^ expected.codeUnitAt(index);
+    }
+    return difference == 0;
+  }
+
+  @override
+  String toString() => 'HomeserverTlsPeerPolicy(kind: $kind, pin: <redacted>)';
+}
+
 /// Immutable trust and routing configuration for exactly one conversation.
 final class HomeserverHttpTransportConfig {
   factory HomeserverHttpTransportConfig({
@@ -53,6 +101,8 @@ final class HomeserverHttpTransportConfig {
     required ConversationId conversationId,
     required String deviceRef,
     required PrivateBearerCredential bearerCredential,
+    HomeserverTlsPeerPolicy tlsPeerPolicy =
+        const HomeserverTlsPeerPolicy.platformTrust(),
     bool allowInsecureLoopbackForTesting = false,
     bool requireKeyTransparency = true,
     Duration connectionTimeout = const Duration(seconds: 5),
@@ -63,6 +113,14 @@ final class HomeserverHttpTransportConfig {
     int maximumPreparedRequests = 128,
   }) {
     _validateEndpoint(baseEndpoint, allowInsecureLoopbackForTesting);
+    if (baseEndpoint.scheme != 'https' &&
+        tlsPeerPolicy.kind != HomeserverTlsPeerPolicyKind.platformTrust) {
+      throw ArgumentError.value(
+        '<redacted>',
+        'tlsPeerPolicy',
+        'certificate pinning requires HTTPS',
+      );
+    }
     if (!requireKeyTransparency &&
         (!allowInsecureLoopbackForTesting ||
             !_isPlainHttpLiteralLoopback(baseEndpoint))) {
@@ -124,6 +182,7 @@ final class HomeserverHttpTransportConfig {
       conversationId: conversationId,
       deviceRef: deviceRef,
       bearerCredential: bearerCredential,
+      tlsPeerPolicy: tlsPeerPolicy,
       allowInsecureLoopbackForTesting: allowInsecureLoopbackForTesting,
       requireKeyTransparency: requireKeyTransparency,
       connectionTimeout: connectionTimeout,
@@ -143,6 +202,7 @@ final class HomeserverHttpTransportConfig {
     required this.conversationId,
     required this.deviceRef,
     required this.bearerCredential,
+    required this.tlsPeerPolicy,
     required this.allowInsecureLoopbackForTesting,
     required this.requireKeyTransparency,
     required this.connectionTimeout,
@@ -160,6 +220,7 @@ final class HomeserverHttpTransportConfig {
   final ConversationId conversationId;
   final String deviceRef;
   final PrivateBearerCredential bearerCredential;
+  final HomeserverTlsPeerPolicy tlsPeerPolicy;
 
   /// Must only be enabled by loopback tests or the loopback reference runtime.
   final bool allowInsecureLoopbackForTesting;
@@ -212,6 +273,10 @@ final class HomeserverHttpTransport
       ..maxConnectionsPerHost = 2
       ..userAgent = 'private-homeserver-client/0.1'
       ..findProxy = ((_) => 'DIRECT');
+    if (config.tlsPeerPolicy.kind ==
+        HomeserverTlsPeerPolicyKind.sha256LeafCertificatePin) {
+      client.connectionFactory = _openPinnedConnection;
+    }
     _client = client;
     try {
       final response = await _exchange(
@@ -691,6 +756,7 @@ final class HomeserverHttpTransport
           request!.add(body);
         }
         final response = await request!.close();
+        _verifyTlsPeer(response);
         if (response.isRedirect ||
             (response.statusCode >= 300 && response.statusCode < 400)) {
           throw const SyncTransportException(
@@ -742,6 +808,42 @@ final class HomeserverHttpTransport
             : SyncFailureKind.unexpected,
       );
     }
+  }
+
+  void _verifyTlsPeer(HttpClientResponse response) {
+    if (config.baseEndpoint.scheme != 'https') return;
+    final certificate = response.certificate;
+    if (certificate == null ||
+        !config.tlsPeerPolicy.acceptsLeafDer(certificate.der)) {
+      throw const SyncTransportException(
+        SyncFailureKind.serverIdentityRejected,
+      );
+    }
+  }
+
+  Future<ConnectionTask<Socket>> _openPinnedConnection(
+    Uri uri,
+    String? proxyHost,
+    int? proxyPort,
+  ) async {
+    if (proxyHost != null || proxyPort != null || uri.scheme != 'https') {
+      throw const HandshakeException('Pinned TLS connection rejected.');
+    }
+    final task = await SecureSocket.startConnect(
+      uri.host,
+      uri.port,
+      context: SecurityContext.defaultContext,
+    );
+    final checkedSocket = task.socket.then<Socket>((socket) {
+      final certificate = socket.peerCertificate;
+      if (certificate == null ||
+          !config.tlsPeerPolicy.acceptsLeafDer(certificate.der)) {
+        socket.destroy();
+        throw const HandshakeException('Pinned TLS peer rejected.');
+      }
+      return socket;
+    });
+    return ConnectionTask.fromSocket<Socket>(checkedSocket, task.cancel);
   }
 
   Future<Uint8List> _readBounded(HttpClientResponse response) async {

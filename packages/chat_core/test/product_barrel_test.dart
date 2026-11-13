@@ -28,6 +28,18 @@ void main() {
           .serverRuntimeCanDecrypt,
       isFalse,
     );
+    expect(
+      privacy.LocalDecryptedMessage(
+        id: 'local-message',
+        serverId: 'private-home',
+        securityDomainId: 'private-domain',
+        conversationId: 'direct-conversation',
+        senderId: 'member-a',
+        sentAt: DateTime.utc(2026),
+        text: 'client plaintext',
+      ),
+      isA<privacy.LocalDecryptedMessage>(),
+    );
   });
 
   test('secure entrypoint preserves product identity with no escrow', () {
@@ -55,6 +67,18 @@ void main() {
     expect(
       secure.HomeserverDeploymentPolicy.secureCollab.serverRuntimeCanDecrypt,
       isFalse,
+    );
+    expect(
+      secure.LocalDecryptedMessage(
+        id: 'local-message',
+        serverId: 'organization-home',
+        securityDomainId: 'member-owned-domain',
+        conversationId: 'workspace-channel',
+        senderId: 'member-a',
+        sentAt: DateTime.utc(2026),
+        text: 'client plaintext',
+      ),
+      isA<secure.LocalDecryptedMessage>(),
     );
   });
 }

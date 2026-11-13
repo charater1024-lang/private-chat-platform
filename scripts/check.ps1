@@ -142,6 +142,11 @@ Invoke-Checked -Executable $dart -Arguments @(
     'tool/validate_ci_workflow.dart',
     '.github/workflows/source-validation.yml',
     '.github/workflows/release-gate.yml',
+    '.github/workflows/platform-build-smoke.yml',
+    '.github/workflows/native-crypto.yml',
+    '.github/workflows/blockchain-contract.yml',
+    '.github/workflows/dependency-review.yml',
+    '.github/workflows/native-collab-docs.yml',
     '.github/dependabot.yml'
 ) -WorkingDirectory $runRoot
 Invoke-Checked -Executable $dart -Arguments @(
@@ -159,22 +164,55 @@ $modules = @(
     'packages/chat_media_picker',
     'packages/chat_sync',
     'packages/chat_ui',
+    'packages/collab_documents',
     'packages/homeserver_client',
     'packages/homeserver_runtime',
-    'packages/key_transparency'
+    'packages/key_transparency',
+    'packages/product_entitlements'
+    'packages/secure_persistence'
 )
 
 foreach ($module in $modules) {
     Invoke-Checked -Executable $dart -Arguments @('analyze', '.') -WorkingDirectory (Join-Path $runRoot $module)
 }
 
+# Execute the `test` package source with the already-resolved package config.
+# `dart run` performs another implicit dependency resolution in each workspace
+# member, which can bypass the single enforced-lockfile resolution above and
+# makes offline/security validation non-deterministic.
+$packageConfigPath = (Resolve-Path -LiteralPath (Join-Path $runRoot '.dart_tool/package_config.json')).Path
+$packageConfig = Get-Content -LiteralPath $packageConfigPath -Raw | ConvertFrom-Json
+$testPackages = @($packageConfig.packages | Where-Object { $_.name -ceq 'test' })
+if ($testPackages.Count -ne 1) {
+    throw 'The enforced workspace resolution must contain exactly one test package.'
+}
+$testRootUri = [System.Uri] $testPackages[0].rootUri
+if (-not $testRootUri.IsAbsoluteUri) {
+    $configDirectoryUri = [System.Uri] (
+        [System.IO.Path]::GetFullPath((Split-Path -Parent $packageConfigPath)) +
+        [System.IO.Path]::DirectorySeparatorChar
+    )
+    $testRootUri = [System.Uri]::new($configDirectoryUri, $testRootUri)
+}
+if (-not $testRootUri.IsFile) {
+    throw 'The resolved test package must use a local file URI.'
+}
+$testRunner = Join-Path $testRootUri.LocalPath 'bin/test.dart'
+if (-not (Test-Path -LiteralPath $testRunner -PathType Leaf)) {
+    throw 'The resolved test package does not contain bin/test.dart.'
+}
+$testRunnerArguments = @("--packages=$packageConfigPath", $testRunner)
+
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_core')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_media')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_media_crypto')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/key_transparency')
+Invoke-Checked -Executable $dart -Arguments @($testRunnerArguments + 'packages/product_entitlements/test') -WorkingDirectory $runRoot
+Invoke-Checked -Executable $dart -Arguments @($testRunnerArguments + 'packages/secure_persistence/test') -WorkingDirectory $runRoot
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_media_picker')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_sync')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/chat_ui')
+Invoke-Checked -Executable $dart -Arguments @($testRunnerArguments + 'packages/collab_documents/test') -WorkingDirectory $runRoot
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/homeserver_client')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'packages/homeserver_runtime')
 Invoke-Checked -Executable $flutter -Arguments @('test', '--no-pub') -WorkingDirectory (Join-Path $runRoot 'apps/everyday_chat')

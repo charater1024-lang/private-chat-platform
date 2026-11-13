@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:chat_core/chat_core.dart';
@@ -197,6 +198,177 @@ Uint8List buildDeviceRegistrationProofTranscript({
 typedef DeviceProofVerifier = FutureOr<bool> Function(
   DeviceProofChallenge challenge,
 );
+
+/// High-entropy credential injected by a trusted TLS reverse proxy.
+///
+/// The credential is an additional internal hop control, not a replacement for
+/// bearer authentication or TLS. It must be generated independently for this
+/// service and delivered to the proxy and runtime through protected secret
+/// stores. It is never emitted by [toString].
+final class PrivateReverseProxyCredential {
+  factory PrivateReverseProxyCredential.base64Url(String value) {
+    _canonicalBase64UrlBytes(value, 'proxyCredential', 32);
+    return PrivateReverseProxyCredential._(value);
+  }
+
+  const PrivateReverseProxyCredential._(this._value);
+
+  final String _value;
+
+  bool acceptsAuthorizationHeader(String? value) {
+    if (value == null) return false;
+    final expected = 'PrivateProxy $_value';
+    var difference = expected.length ^ value.length;
+    final compared = expected.length < value.length
+        ? expected.length
+        : value.length;
+    for (var index = 0; index < compared; index += 1) {
+      difference |= expected.codeUnitAt(index) ^ value.codeUnitAt(index);
+    }
+    return difference == 0;
+  }
+
+  @override
+  String toString() => 'PrivateReverseProxyCredential(<redacted>)';
+}
+
+/// Listener trust boundary for the homeserver runtime.
+///
+/// The default is IPv4 loopback. [privateReverseProxy] is the only networked
+/// mode: it requires a concrete RFC1918/ULA bind address, exact private proxy
+/// peers, exact public Host values, HTTPS forwarding evidence, and a shared
+/// internal-hop credential. Wildcard/unspecified and public bind addresses are
+/// always rejected.
+final class HomeserverListenerPolicy {
+  HomeserverListenerPolicy.loopback()
+    : bindAddress = InternetAddress.loopbackIPv4,
+      _trustedProxyAddresses = const <String>{},
+      _allowedHosts = const <String>{},
+      _proxyCredential = null;
+
+  factory HomeserverListenerPolicy.privateReverseProxy({
+    required InternetAddress bindAddress,
+    required Iterable<InternetAddress> trustedProxyAddresses,
+    required Iterable<String> allowedHosts,
+    required PrivateReverseProxyCredential proxyCredential,
+  }) {
+    if (!_isPrivateUnicast(bindAddress) || bindAddress.isLoopback) {
+      throw ArgumentError.value(
+        '<redacted>',
+        'bindAddress',
+        'must be a concrete private unicast address',
+      );
+    }
+    final proxies = <String>{};
+    for (final proxy in trustedProxyAddresses) {
+      if ((!proxy.isLoopback && !_isPrivateUnicast(proxy)) ||
+          !_sameAddressFamily(bindAddress, proxy)) {
+        throw ArgumentError.value(
+          '<redacted>',
+          'trustedProxyAddresses',
+          'must contain same-family loopback/private addresses',
+        );
+      }
+      proxies.add(proxy.address.toLowerCase());
+    }
+    if (proxies.isEmpty || proxies.length > 32) {
+      throw ArgumentError.value(
+        '<redacted>',
+        'trustedProxyAddresses',
+        'must contain 1-32 exact proxy addresses',
+      );
+    }
+    final hosts = <String>{};
+    for (final host in allowedHosts) {
+      final normalized = host.trim().toLowerCase();
+      if (normalized != host.toLowerCase() ||
+          normalized.isEmpty ||
+          normalized.length > 255 ||
+          normalized.contains(RegExp(r'[\s/@\\]')) ||
+          normalized.contains('*') ||
+          normalized.startsWith('.') ||
+          normalized.endsWith('.')) {
+        throw ArgumentError.value(
+          '<redacted>',
+          'allowedHosts',
+          'must contain exact bounded Host header values',
+        );
+      }
+      hosts.add(normalized);
+    }
+    if (hosts.isEmpty || hosts.length > 16) {
+      throw ArgumentError.value(
+        '<redacted>',
+        'allowedHosts',
+        'must contain 1-16 exact Host header values',
+      );
+    }
+    return HomeserverListenerPolicy._(
+      bindAddress,
+      Set.unmodifiable(proxies),
+      Set.unmodifiable(hosts),
+      proxyCredential,
+    );
+  }
+
+  const HomeserverListenerPolicy._(
+    this.bindAddress,
+    this._trustedProxyAddresses,
+    this._allowedHosts,
+    this._proxyCredential,
+  );
+
+  final InternetAddress bindAddress;
+  final Set<String> _trustedProxyAddresses;
+  final Set<String> _allowedHosts;
+  final PrivateReverseProxyCredential? _proxyCredential;
+
+  bool get isLoopbackOnly => _proxyCredential == null;
+
+  bool acceptsDirectPeer(InternetAddress address) => isLoopbackOnly
+      ? address.isLoopback
+      : _trustedProxyAddresses.contains(address.address.toLowerCase());
+
+  bool acceptsHost(String? host, int boundPort) {
+    if (host == null) return false;
+    final normalized = host.toLowerCase();
+    if (!isLoopbackOnly) return _allowedHosts.contains(normalized);
+    return normalized == InternetAddress.loopbackIPv4.address ||
+        normalized == '${InternetAddress.loopbackIPv4.address}:$boundPort' ||
+        normalized == 'localhost' ||
+        normalized == 'localhost:$boundPort';
+  }
+
+  bool acceptsProxyHeaders(HttpHeaders headers) {
+    if (isLoopbackOnly) return true;
+    final authorization = headers['x-private-homeserver-proxy-authorization'];
+    final forwardedProto = headers['x-forwarded-proto'];
+    return authorization?.length == 1 &&
+        _proxyCredential!.acceptsAuthorizationHeader(authorization!.single) &&
+        forwardedProto?.length == 1 &&
+        forwardedProto!.single.toLowerCase() == 'https';
+  }
+
+  @override
+  String toString() =>
+      'HomeserverListenerPolicy(scope: ${isLoopbackOnly ? 'loopback' : 'private-proxy'}, details: <redacted>)';
+}
+
+bool _sameAddressFamily(InternetAddress left, InternetAddress right) =>
+    left.type == right.type;
+
+bool _isPrivateUnicast(InternetAddress address) {
+  final bytes = address.rawAddress;
+  if (address.type == InternetAddressType.IPv4 && bytes.length == 4) {
+    return bytes[0] == 10 ||
+        (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31) ||
+        (bytes[0] == 192 && bytes[1] == 168);
+  }
+  if (address.type == InternetAddressType.IPv6 && bytes.length == 16) {
+    return (bytes[0] & 0xfe) == 0xfc; // RFC 4193 unique-local fc00::/7.
+  }
+  return false;
+}
 
 /// Immutable limits for the loopback runtime.
 final class HomeserverRuntimeLimits {
@@ -494,9 +666,11 @@ final class HomeserverRuntimeConfig {
     required this.deviceProofVerifier,
     this.ownerLocale = 'ko',
     this.port = 0,
+    HomeserverListenerPolicy? listenerPolicy,
     HomeserverRuntimeLimits? limits,
     this.clock = DateTime.now,
-  }) : limits = limits ?? HomeserverRuntimeLimits() {
+  }) : listenerPolicy = listenerPolicy ?? HomeserverListenerPolicy.loopback(),
+       limits = limits ?? HomeserverRuntimeLimits() {
     _opaqueId(serverRef, 'serverRef');
     _display(displayName, 'displayName', 120);
     _opaqueId(securityDomainId, 'securityDomainId');
@@ -524,6 +698,7 @@ final class HomeserverRuntimeConfig {
   final String ownerLocale;
   final DeviceProofVerifier deviceProofVerifier;
   final int port;
+  final HomeserverListenerPolicy listenerPolicy;
   final HomeserverRuntimeLimits limits;
   final DateTime Function() clock;
 }

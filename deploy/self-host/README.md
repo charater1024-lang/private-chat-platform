@@ -1,23 +1,46 @@
-# Closed private homeserver / 폐쇄형 사설 홈서버
+# Closed Matrix reference / 폐쇄형 Matrix 참조 서버
 
 이 디렉터리는 서버 소유자가 가입을 승인하고, 승인된 로컬 구성원끼리 암호화된 1:1·단체방을 만드는 **검토용 배포 골격**이다. Synapse, PostgreSQL, Caddy를 사용하며 외부 연합, 공개 가입, 공개 방 목록, URL 미리보기와 서버 검색은 기본적으로 닫혀 있다.
 
 This is a **reviewable deployment reference**, not a production guarantee. The owner approves accounts; authenticated local members can then create encrypted 1:1 and invite-only group rooms. Federation, public sign-up, public room listings, URL previews, and server search are closed by default.
 
-> 현재 Flutter 앱은 이 서버에 아직 연결되지 않았고 실제 E2EE도 구현되지 않았다. 이 구성을 실행해도 현재 프로토타입이 네트워크 메신저로 바뀌지는 않는다. 클라이언트 통합, 상호운용 시험과 외부 보안 검토가 먼저 필요하다.
+> **중요:** 현재 Flutter 앱은 custom `/v1` API를 사용하지만 이 stack은 Matrix
+> reference일 뿐이다. 두 protocol은 호환되지 않는다. Caddy는 `/v1/*`에
+> 의도적으로 `503`을 반환하며, 이 구성을 앱 backend로 표시하거나 출시할 수 없다.
+> 안전한 custom daemon의 필수 조건은
+> [launcher contract](CUSTOM_BACKEND_LAUNCH_CONTRACT.md)에 고정되어 있다.
 >
-> The Flutter clients are not yet connected to this stack and do not yet implement production E2EE. Running it does not turn the prototype into a network messenger.
+> The Flutter clients are not connected to this Matrix reference. Running it
+> does not provide the custom `/v1` backend or production E2EE.
+
+[`backend-profile.yaml`](backend-profile.yaml)은 이 차단을 기계 판독 가능한
+형태로 기록한다. `application_backend`, `custom_v1_routed`, `release_eligible`은
+안전한 launcher와 외부 보안 증거가 갖춰질 때까지 모두 `false`여야 한다.
 
 ## 안전 기본값 / Secure defaults
 
-- Synapse `8008`은 Docker 내부에만 노출되고 Caddy만 `80/443`을 공개한다.
-- Caddy는 client/media 경로만 전달한다. admin 및 federation API는 공개하지 않고, 비밀과 공격자 입력이 섞일 수 있는 동적 Matrix 응답의 edge 압축도 사용하지 않는다.
+- Synapse `8008`은 Docker 내부에만 노출된다. Caddy의 `80/443`도 기본값은
+  `127.0.0.1`에만 bind하며, 운영자가 검토한 LAN/public 주소를 명시적으로
+  선택해야 외부에서 접근된다.
+- Caddy는 인증된 `/_matrix/client/*`만 전달한다. legacy media,
+  `/_synapse/client/*`, admin 및 federation API는 공개하지 않고, 비밀과 공격자
+  입력이 섞일 수 있는 동적 Matrix 응답의 edge 압축도 사용하지 않는다.
+- `/v1/*`은 Synapse로 전달하지 않고 `503`으로 닫는다. Matrix API를 custom 앱
+  API로 오인하는 silent fallback은 validator와 release preflight가 차단한다.
+- Caddy는 header/body 크기와 stalled connection 시간을 제한한다. Synapse도
+  login, message, join, invite와 media-create rate limit을 명시적으로 고정한다.
 - Synapse listener에는 `client` resource만 있고 federation allowlist는 명시적인 빈 목록이다. 호스트 방화벽에서도 `8448`을 열지 않는다.
 - 방 암호화 기본값은 `all`이고 가입·게스트·공개 방 목록은 닫힌다.
 - 컨테이너 image는 tag와 digest를 함께 고정하며 `latest`를 사용하지 않는다.
 - 세 컨테이너 모두 read-only root filesystem, `no-new-privileges`, capability 축소, healthcheck와 bounded logs를 사용한다.
 - PostgreSQL 비밀번호와 Synapse의 완전한 `psycopg2` 연결 설정은 Git에서 제외된 서로 일치하는 Docker secret 파일에 있다. DB 비밀번호를 환경 변수나 추적되는 YAML에 넣지 않는다.
-- DB network는 `internal`이고 PostgreSQL port를 host에 publish하지 않는다.
+- Caddy↔Synapse proxy network와 DB network는 서로 분리된 `internal` network다.
+  Synapse와 PostgreSQL은 직접 인터넷 egress가 없고 PostgreSQL port를 host에
+  publish하지 않는다.
+- 인증 미디어만 허용하고 upload는 256 MiB, 미완료 upload는 사용자당 3개로
+  제한한다. 성공한 access request의 IP·URI는 stdout에 기록하지 않는다.
+- image 값은 version tag와 64자리 `sha256` registry digest를 모두 포함해야 한다.
+  mutable tag는 validator와 bootstrap이 거부한다.
 - Synapse native push는 꺼져 있다. `include_content: false`만으로는 room/event 식별자가 push gateway에 전달되므로 불투명 wake-up 어댑터 없이 활성화하지 않는다.
 
 ## 부트스트랩 / Bootstrap
@@ -25,13 +48,25 @@ This is a **reviewable deployment reference**, not a production guarantee. The o
 필수 환경은 Linux host, Docker Engine과 Compose v2, 실제 DNS 이름, 외부에서 접근 가능한 80/443 또는 검증된 사설 PKI다. 서버 이름은 사용자 ID 일부가 되며 운영 후 변경하기 어렵기 때문에 먼저 확정한다.
 
 1. `.env.example`을 `.env`로 복사하고 domain·operator email을 설정한다.
+   기본 `CADDY_BIND_IP=127.0.0.1`을 유지하면 같은 host에서만 접근할 수 있다.
+   LAN에서는 특정 private IP를 사용한다. `0.0.0.0`이나 public IP를 사용할 때는
+   firewall·router·TLS 검토 후에만
+   `PUBLIC_EXPOSURE_ACK=I_ACCEPT_PUBLIC_INTERNET_EXPOSURE`를 별도로 설정한다.
 2. 세 image의 공식 release note와 registry manifest를 확인하고 모든 `REPLACE_WITH_VERIFIED_DIGEST`를 실제 digest로 바꾼다. 움직이는 tag만으로 배포하지 않는다.
 3. 저장소 root에서 `.\scripts\validate-self-host.ps1`을 실행한다. 이 검사는 container를 시작하지 않는다.
 4. 저장소 root에서 `.\scripts\bootstrap-self-host.ps1`을 실행한다. 이 script는 48 random bytes(384-bit)의 DB password를 만들고 `postgres_password.txt`와 완전한 `synapse_database.yaml`에 동일하게 기록한다. 둘 다 Git ignored runtime secret이며 비밀번호를 출력하거나 process environment로 전달하지 않는다.
 5. pinned Synapse image가 config/signing key를 최초 1회 생성하면, validator가 `homeserver.yaml`, 폐쇄형 override, database secret 순으로 세 설정을 함께 읽는다. image generator가 기본 `homeserver.yaml`에 SQLite stanza를 만들 수 있지만 Compose는 마지막 `psycopg2` 설정을 반드시 로드한다. database secret 누락·불일치·SQLite effective fallback은 검증 또는 시작 단계에서 실패하며 기존 config는 자동 overwrite하지 않는다.
-6. `docker compose up -d` 후 외부에서는 443의 Matrix client API만 접근되고 admin/federation endpoint가 404인지 확인한다.
-7. `register_new_matrix_user`를 container 내부에서 실행해 최초 admin과 승인된 구성원만 생성한다. 이후 registration shared secret을 제거하거나 별도 보안 파일로 격리하고 재시작한다.
-8. 서로 다른 두 실제 기기에서 기기 검증, E2EE 1:1, 그룹 참여자 변경, 파일 전송, 재접속과 키 분실 시 서버 복구가 불가능한지 시험한다.
+6. Bootstrap은 image generator가 만든 `registration_shared_secret`을 원자적으로
+   삭제하며 폐쇄형 override도 이를 `null`로 강제한다. 이 배포 profile에는
+   shared-secret registration API가 존재하지 않는다.
+7. 최초 관리자는 인터넷과 분리된 일회성 provisioning 환경에서 생성한 뒤,
+   generated config에 registration secret이 남지 않았음을 다시 검증하고 이
+   폐쇄형 profile로 전환한다. 장기 shared secret을 두거나 공개된 서비스에서
+   `register_new_matrix_user`를 실행하는 절차는 지원하지 않는다.
+8. `docker compose up -d` 후 선택한 bind 주소에서는 443의 인증된 Matrix client
+   API만 접근되고 legacy media, Synapse helper, admin/federation endpoint가
+   404인지 확인한다.
+9. 서로 다른 두 실제 기기에서 기기 검증, E2EE 1:1, 그룹 참여자 변경, 파일 전송, 재접속과 키 분실 시 서버 복구가 불가능한지 시험한다.
 
 공식 Synapse image는 `/data`에 config·media·signing key를 두고 기본 UID/GID `991`을 지원하지만, 선택한 **고정 버전**의 문서를 배포 직전에 다시 확인한다.
 
@@ -48,9 +83,8 @@ docker compose --env-file .env config --quiet
 docker compose --env-file .env up -d
 docker compose --env-file .env ps
 
-# 공개 가입 대신 승인된 로컬 계정 생성
-docker compose --env-file .env exec synapse `
-  register_new_matrix_user http://127.0.0.1:8008 -c /data/homeserver.yaml
+# Caddy는 기본적으로 loopback에만 bind한다. 공개/LAN bind는 .env와 validator의
+# 명시적 승인 없이는 허용되지 않는다.
 ```
 
 외부 host에서 client versions와 `.well-known/matrix/client`는 `200`, `/_synapse/admin/...`과 `/_matrix/federation/...`은 `404`여야 한다. 결과 body에 secret이나 내부 주소가 없는지도 함께 확인한다.

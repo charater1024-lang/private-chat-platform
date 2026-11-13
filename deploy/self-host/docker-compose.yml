@@ -74,10 +74,12 @@ services:
     volumes:
       - synapse_data:/data
       - ./synapse/closed-private.yaml:/etc/synapse/closed-private.yaml:ro
+      - ./synapse/log.config:/etc/synapse/log.config:ro
+      - ./synapse/scrub_generated_config.py:/etc/synapse/scrub_generated_config.py:ro
     expose:
       - "8008"
     networks:
-      - edge
+      - proxy
       - database
     healthcheck:
       test:
@@ -121,14 +123,17 @@ services:
       synapse:
         condition: service_healthy
     ports:
-      - "80:80"
-      - "443:443"
+      # Loopback is the fail-closed default. Set CADDY_BIND_IP to a reviewed
+      # LAN/public address only after firewall and exposure validation.
+      - "${CADDY_BIND_IP:-127.0.0.1}:80:80"
+      - "${CADDY_BIND_IP:-127.0.0.1}:443:443"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - edge
+      - frontend
+      - proxy
     healthcheck:
       test:
         - CMD
@@ -156,7 +161,11 @@ services:
     logging: *bounded-logging
 
 networks:
-  edge:
+  # Caddy alone receives published traffic and ACME egress. The reverse-proxy
+  # hop and database hop are separate internal-only bridges.
+  frontend:
+  proxy:
+    internal: true
   database:
     internal: true
 

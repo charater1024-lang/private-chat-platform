@@ -1,6 +1,6 @@
 # 제품 범위: Everyday Chat과 Secure Collab
 
-상태: 개발 기준, 2026-09-03
+상태: 개발 기준, 2026-11-13
 
 ## 1. 제품 결정
 
@@ -10,7 +10,7 @@
 | 구분 | Everyday Chat | Secure Collab |
 |---|---|---|
 | 핵심 사용자 | 개인, 가족, 친구, 소규모 모임 | 프로젝트 팀, 동호회, 소규모 조직 |
-| 기본 경험 | 연락처, 1:1, 단체 대화 | 워크스페이스, 채널, 스레드, 업무 카드 |
+| 기본 경험 | 연락처, 1:1, 단체 대화 | 워크스페이스, 채널, 스레드, 업무 카드, 공동 문서 |
 | 서버 소유 | 한 개인이 직접 운영하거나 선택한 장비·VPS를 소유 | 한 개인이 팀을 위해 운영하거나 선택한 장비·VPS를 소유 |
 | 콘텐츠 보안 | `TRUE_E2EE`, 참여 기기만 키 보유 | `TRUE_E2EE`, 참여 기기만 키 보유 |
 | 검색 | 기기 로컬 | 기기 로컬 및 암호화된 client index |
@@ -63,7 +63,8 @@ Secure Collab의 관리자 역할은 멤버와 협업 구조를 관리하기 위
 
 ### 접근성·플랫폼
 
-- Android, iOS, Windows와 macOS의 핵심 흐름
+- Android, iOS, Windows와 Linux의 핵심 흐름
+- macOS shell은 유지하되 첫 정식 지원 게이트는 위 네 플랫폼을 우선한다.
 - 모바일 단일 패널과 PC 다중 패널
 - 200% 글자, screen reader, keyboard, 고대비와 동작 줄이기
 - 실제 저사양 기준 기기의 시작시간·스크롤·메모리·배터리 budget
@@ -81,7 +82,11 @@ MVP 이후 후보는 음성·영상 통화, 투표·일정, 음성 메시지, �
 
 MVP는 워크스페이스, 공개 범위가 제한된 채널, 1:1·단체 대화, 스레드,
 멘션, 업무 카드, 역할, 멤버 비활성화, 업무 프로필과 PC 다중 패널을
-포함한다. 모든 채널 콘텐츠와 첨부도 같은 `TRUE_E2EE` 경계를 따른다.
+포함한다. Team 업무 기능에는 channel에 고정 가능한 실시간 공동 문서,
+offline merge, 댓글·제안과 version history를 추가한다. 모든 채널·문서 콘텐츠와
+첨부도 같은 `TRUE_E2EE` 경계를 따르며, server는 CRDT change를 해독하지 못한다.
+현재 구현은 Dart 계약과 격리된 Automerge native prototype까지이며, FFI·앱 UI·
+homeserver route·운영 영속 저장이 연결되기 전에는 제품 기능으로 활성화하지 않는다.
 
 MVP 이후 후보는 SSO/SCIM, MDM, 세분화된 RBAC, bot·webhook·workflow와
 회의다. bot, AI 또는 외부 integration이 평문을 받아야 한다면 명시적인

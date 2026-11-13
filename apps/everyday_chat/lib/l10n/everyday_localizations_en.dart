@@ -37,6 +37,19 @@ class EverydayLocalizationsEn extends EverydayLocalizations {
   String get searchChats => 'Search chats';
 
   @override
+  String get searchMessages => 'Search this chat';
+
+  @override
+  String get closeMessageSearch => 'Close message search';
+
+  @override
+  String get clearSearch => 'Clear search';
+
+  @override
+  String get messageSearchLocalOnly =>
+      'Message content is searched only on this device and is not sent to the server.';
+
+  @override
   String get trueE2ee => 'Target policy: E2EE · Not verified';
 
   @override

@@ -155,6 +155,30 @@ abstract class EverydayLocalizations {
   /// **'대화 검색'**
   String get searchChats;
 
+  /// No description provided for @searchMessages.
+  ///
+  /// In ko, this message translates to:
+  /// **'현재 대화 내용 검색'**
+  String get searchMessages;
+
+  /// No description provided for @closeMessageSearch.
+  ///
+  /// In ko, this message translates to:
+  /// **'대화 내용 검색 닫기'**
+  String get closeMessageSearch;
+
+  /// No description provided for @clearSearch.
+  ///
+  /// In ko, this message translates to:
+  /// **'검색어 지우기'**
+  String get clearSearch;
+
+  /// No description provided for @messageSearchLocalOnly.
+  ///
+  /// In ko, this message translates to:
+  /// **'메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.'**
+  String get messageSearchLocalOnly;
+
   /// No description provided for @trueE2ee.
   ///
   /// In ko, this message translates to:

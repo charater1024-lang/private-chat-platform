@@ -1,0 +1,7 @@
+profile_version: 1
+protocol: matrix-reference
+application_backend: false
+custom_v1_routed: false
+release_eligible: false
+custom_v1_failure_status: 503
+launcher_contract: CUSTOM_BACKEND_LAUNCH_CONTRACT.md

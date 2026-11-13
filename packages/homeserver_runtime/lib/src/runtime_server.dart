@@ -33,6 +33,7 @@ final class HomeserverRuntime {
   _RuntimeState _state;
   final HomeserverRuntimeSnapshotStore? _snapshotStore;
   int _snapshotGeneration;
+  bool _terminalPersistenceFault = false;
   final _AsyncGate _persistentRequestGate = _AsyncGate();
   StreamSubscription<HttpRequest>? _subscription;
   int _inFlightRequestCount = 0;
@@ -57,13 +58,20 @@ final class HomeserverRuntime {
   /// Latest successfully committed snapshot generation, or zero in memory.
   int get snapshotGeneration => _snapshotGeneration;
 
-  Uri get baseUri => Uri(
-    scheme: 'http',
-    host: InternetAddress.loopbackIPv4.address,
-    port: _server.port,
-  );
+  /// Whether a durable commit had an indeterminate or failed outcome.
+  ///
+  /// The process must be restarted so startup recovery can reconcile the
+  /// authenticated disk head with its protected generation anchor.
+  bool get hasTerminalPersistenceFault => _terminalPersistenceFault;
 
-  /// Starts an HTTP listener that can only bind to the IPv4 loopback device.
+  Uri get baseUri =>
+      Uri(scheme: 'http', host: _server.address.address, port: _server.port);
+
+  /// Starts the configured fail-closed listener.
+  ///
+  /// The default is IPv4 loopback. Networked operation is limited to an exact
+  /// private address behind explicitly trusted TLS reverse proxies; wildcard
+  /// and public binds cannot be configured.
   static Future<HomeserverRuntime> start(
     HomeserverRuntimeConfig config, {
     HomeserverRuntimeSnapshotStore? snapshotStore,
@@ -111,7 +119,7 @@ final class HomeserverRuntime {
       }
     }
     final server = await HttpServer.bind(
-      InternetAddress.loopbackIPv4,
+      config.listenerPolicy.bindAddress,
       config.port,
       shared: false,
     );
@@ -190,12 +198,21 @@ final class HomeserverRuntime {
     if (_snapshotStore == null) return await mutation();
     final rollback = await _encodeRuntimeSnapshot(_state, _config);
     try {
-      final result = await mutation();
-      await _commitState();
-      return result;
-    } on Object {
-      _state = _decodeRuntimeSnapshot(rollback, _config);
-      rethrow;
+      late final T result;
+      try {
+        result = await mutation();
+      } on Object {
+        _state = _decodeRuntimeSnapshot(rollback, _config);
+        rethrow;
+      }
+      try {
+        await _commitState();
+        return result;
+      } on Object {
+        _state = _decodeRuntimeSnapshot(rollback, _config);
+        _terminalPersistenceFault = true;
+        rethrow;
+      }
     } finally {
       rollback.fillRange(0, rollback.length, 0);
     }
@@ -203,7 +220,7 @@ final class HomeserverRuntime {
 
   @override
   String toString() =>
-      'HomeserverRuntime(loopback: true, credentials: <redacted>)';
+      'HomeserverRuntime(listener: ${_config.listenerPolicy}, credentials: <redacted>)';
 
   Future<void> _dispatch(HttpRequest request) async {
     _inFlightRequestCount += 1;
@@ -234,10 +251,26 @@ final class HomeserverRuntime {
 
   Future<void> _dispatchUnlocked(HttpRequest request) async {
     try {
-      _requireLoopbackPeer(request);
+      _requireTrustedPeer(request);
+      if (_terminalPersistenceFault) {
+        throw const _HttpFailure(
+          HttpStatus.serviceUnavailable,
+          'PERSISTENCE_UNAVAILABLE',
+          'The homeserver requires restart and storage recovery.',
+        );
+      }
       await _route(request);
     } on _HttpFailure catch (failure) {
       await _writeFailure(request, failure);
+    } on HomeserverRuntimePersistenceException {
+      await _writeFailure(
+        request,
+        const _HttpFailure(
+          HttpStatus.serviceUnavailable,
+          'PERSISTENCE_UNAVAILABLE',
+          'The homeserver requires restart and storage recovery.',
+        ),
+      );
     } on Object {
       await _writeFailure(
         request,
@@ -250,33 +283,29 @@ final class HomeserverRuntime {
     }
   }
 
-  void _requireLoopbackPeer(HttpRequest request) {
+  void _requireTrustedPeer(HttpRequest request) {
     final connection = request.connectionInfo;
-    if (connection == null || !connection.remoteAddress.isLoopback) {
+    final listener = _config.listenerPolicy;
+    if (connection == null ||
+        !listener.acceptsDirectPeer(connection.remoteAddress) ||
+        !listener.acceptsHost(request.headers.host, _server.port) ||
+        !listener.acceptsProxyHeaders(request.headers)) {
       throw const _HttpFailure(
         HttpStatus.forbidden,
         'AUTHORIZATION_DENIED',
-        'Loopback access is required.',
-      );
-    }
-    final host = request.headers.host;
-    final allowedHosts = <String>{
-      InternetAddress.loopbackIPv4.address,
-      '${InternetAddress.loopbackIPv4.address}:${_server.port}',
-      'localhost',
-      'localhost:${_server.port}',
-    };
-    if (host == null || !allowedHosts.contains(host.toLowerCase())) {
-      throw const _HttpFailure(
-        HttpStatus.forbidden,
-        'AUTHORIZATION_DENIED',
-        'The request host is not allowed.',
+        'The listener trust boundary rejected the request.',
       );
     }
   }
 
   Future<void> _route(HttpRequest request) async {
     final segments = request.uri.pathSegments;
+    if (_matches(segments, const ['healthz'])) {
+      _requireMethod(request, 'GET');
+      _requireNoQuery(request);
+      _requireNoBody(request);
+      return _writeJson(request, HttpStatus.ok, const {'status': 'ok'});
+    }
     if (segments.length >= 2 &&
         (segments[0] != 'v1' || segments.any(_unsafeSegment))) {
       throw const _HttpFailure(
@@ -1957,6 +1986,17 @@ final class HomeserverRuntime {
         HttpStatus.badRequest,
         'INVALID_REQUEST',
         'Query parameters are not accepted on this route.',
+      );
+    }
+  }
+
+  void _requireNoBody(HttpRequest request) {
+    if (request.headers.contentLength > 0 ||
+        request.headers.chunkedTransferEncoding) {
+      throw const _HttpFailure(
+        HttpStatus.badRequest,
+        'INVALID_REQUEST',
+        'A request body is not accepted on this route.',
       );
     }
   }

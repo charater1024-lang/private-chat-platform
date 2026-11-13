@@ -16,6 +16,9 @@ const _desktopBreakpoint = 980.0;
 const _detailsBreakpoint = 1280.0;
 const _sidebarColor = Color(0xFF2A1748);
 const _workspaceColor = Color(0xFF190F2A);
+const _messageSearchScanLimit = 2000;
+const _messageSearchResultLimit = 100;
+const _messageSearchQueryLimit = 120;
 
 /// The local preview follows the same no-escrow boundary required in release
 /// builds. Exposing this descriptor keeps that product invariant testable
@@ -63,6 +66,7 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
   late final InMemoryHomeserverRepository _homeserverRepository;
   final _mediaPolicy = MediaPolicies.consumer;
   late final List<TextEditingController> _messageControllers;
+  final _messageSearchController = TextEditingController();
   final _messageScrollController = ScrollController();
   int _selectedChannel = 0;
   int _nextAttachmentId = 1;
@@ -87,6 +91,7 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
   );
 
   final List<_AttachmentDraft> _attachmentDrafts = [];
+  bool _messageSearchOpen = false;
   bool _isPickingMedia = false;
 
   final List<_Channel> _channels = [
@@ -154,6 +159,7 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
       _channels.length,
       (_) => TextEditingController(),
     );
+    _messageSearchController.addListener(_onMessageSearchChanged);
     _listenToMessageSync();
     unawaited(_synchronizeSelectedChannel());
   }
@@ -224,6 +230,9 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
     for (final controller in _messageControllers) {
       controller.dispose();
     }
+    _messageSearchController
+      ..removeListener(_onMessageSearchChanged)
+      ..dispose();
     _messageScrollController.dispose();
     _syncSubscriptionGeneration += 1;
     unawaited(_syncSubscription?.cancel());
@@ -280,8 +289,58 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
     await sync.synchronize(localConversationId);
   }
 
+  void _onMessageSearchChanged() => setState(() {});
+
+  void _toggleMessageSearch() {
+    setState(() {
+      _messageSearchOpen = !_messageSearchOpen;
+      if (!_messageSearchOpen) _messageSearchController.clear();
+    });
+  }
+
+  bool _matchesTimelineSearch(_ChannelTimelineEntry entry, String query) {
+    return switch (entry) {
+      _WorkspaceMessage message =>
+        message.text.toLowerCase().contains(query) ||
+            message.author.toLowerCase().contains(query),
+      _SentMediaMessage media =>
+        media.selection.fileName.toLowerCase().contains(query) ||
+            media.accessibilityDescription.toLowerCase().contains(query),
+      _SentAnimatedStickerMessage sticker =>
+        sticker.sticker.bubbleText.toLowerCase().contains(query) ||
+            sticker.sticker.name.toLowerCase().contains(query),
+      _ => false,
+    };
+  }
+
+  List<_ChannelTimelineEntry> _visibleTimelineForSearch(
+    List<_ChannelTimelineEntry> timeline,
+    String query,
+  ) {
+    if (query.isEmpty) return timeline;
+
+    final matches = <_ChannelTimelineEntry>[];
+    final firstIndex = (timeline.length - _messageSearchScanLimit).clamp(
+      0,
+      timeline.length,
+    );
+    for (
+      var index = timeline.length - 1;
+      index >= firstIndex && matches.length < _messageSearchResultLimit;
+      index -= 1
+    ) {
+      final entry = timeline[index];
+      if (_matchesTimelineSearch(entry, query)) matches.add(entry);
+    }
+    return matches.reversed.toList(growable: false);
+  }
+
   void _selectChannel(int index) {
-    setState(() => _selectedChannel = index);
+    setState(() {
+      _selectedChannel = index;
+      _messageSearchOpen = false;
+      _messageSearchController.clear();
+    });
     unawaited(_synchronizeSelectedChannel());
   }
 
@@ -741,9 +800,12 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
         ),
         actions: [
           IconButton(
-            tooltip: _l10n.search,
-            onPressed: () {},
-            icon: const Icon(Icons.search),
+            key: const ValueKey('collab-mobile-message-search-toggle'),
+            tooltip: _messageSearchOpen
+                ? _l10n.closeMessageSearch
+                : _l10n.search,
+            onPressed: _toggleMessageSearch,
+            icon: Icon(_messageSearchOpen ? Icons.close : Icons.search),
           ),
           IconButton(
             key: const ValueKey('mobile-profile-edit'),
@@ -825,6 +887,10 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
     final timeline =
         _timelinesByChannel[_selectedChannel] ??
         const <_ChannelTimelineEntry>[];
+    final messageQuery = _messageSearchController.text.trim().toLowerCase();
+    final visibleTimeline = _visibleTimelineForSearch(timeline, messageQuery);
+    final showEmptySearch = messageQuery.isNotEmpty && visibleTimeline.isEmpty;
+    final showTaskCard = !channel.isConversation && messageQuery.isEmpty;
     final scheme = Theme.of(context).colorScheme;
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -845,6 +911,8 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
                 channel: channel,
                 profile: _profile,
                 onEditProfile: _editProfile,
+                onSearch: _toggleMessageSearch,
+                isSearchOpen: _messageSearchOpen,
               ),
             _PrivacySecurityBanner(
               policyVersion: _domain.policyVersion,
@@ -852,6 +920,33 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
                   _syncPresentation.connectionStatus !=
                   HomeserverConnectionStatus.unconfigured,
             ),
+            if (_messageSearchOpen)
+              Material(
+                color: scheme.surface,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: TextField(
+                    key: const ValueKey('collab-message-search-field'),
+                    controller: _messageSearchController,
+                    autofocus: true,
+                    maxLength: _messageSearchQueryLimit,
+                    textInputAction: TextInputAction.search,
+                    decoration: InputDecoration(
+                      hintText: _l10n.messageSearchHint,
+                      helperText: _l10n.messageSearchLocalOnly,
+                      counterText: '',
+                      prefixIcon: const Icon(Icons.search),
+                      suffixIcon: _messageSearchController.text.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: _l10n.clearSearch,
+                              onPressed: _messageSearchController.clear,
+                              icon: const Icon(Icons.clear),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
             Expanded(
               child: ListView.builder(
                 key: const ValueKey('collab-message-list'),
@@ -860,8 +955,9 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
                 itemCount:
                     1 +
                     (attachmentDrafts.isEmpty ? 1 : 0) +
-                    timeline.length +
-                    (channel.isConversation ? 0 : 1),
+                    visibleTimeline.length +
+                    (showTaskCard ? 1 : 0) +
+                    (showEmptySearch ? 1 : 0),
                 itemBuilder: (context, index) {
                   if (index == 0) {
                     final startLabel = switch (channel.conversationKind) {
@@ -907,8 +1003,19 @@ class _SecureWorkspacePageState extends State<SecureWorkspacePage> {
                   }
                   final timelineIndex =
                       index - 1 - (attachmentDrafts.isEmpty ? 1 : 0);
-                  if (timelineIndex < timeline.length) {
-                    return _buildTimelineEntry(timeline[timelineIndex]);
+                  if (timelineIndex < visibleTimeline.length) {
+                    return _buildTimelineEntry(visibleTimeline[timelineIndex]);
+                  }
+                  if (showEmptySearch) {
+                    return Padding(
+                      padding: const EdgeInsets.all(32),
+                      child: Center(
+                        child: Text(
+                          _l10n.noMessageSearchResults,
+                          key: const ValueKey('collab-message-search-empty'),
+                        ),
+                      ),
+                    );
                   }
                   return const _TaskCard();
                 },
@@ -1414,11 +1521,15 @@ class _ChannelHeader extends StatelessWidget {
     required this.channel,
     required this.profile,
     required this.onEditProfile,
+    required this.onSearch,
+    required this.isSearchOpen,
   });
 
   final _Channel channel;
   final WorkProfile profile;
   final VoidCallback onEditProfile;
+  final VoidCallback onSearch;
+  final bool isSearchOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -1456,9 +1567,10 @@ class _ChannelHeader extends StatelessWidget {
               icon: const Icon(Icons.headset_mic_outlined),
             ),
             IconButton(
-              tooltip: l10n.search,
-              onPressed: () {},
-              icon: const Icon(Icons.search),
+              tooltip: isSearchOpen ? l10n.closeMessageSearch : l10n.search,
+              key: const ValueKey('collab-desktop-message-search-toggle'),
+              onPressed: onSearch,
+              icon: Icon(isSearchOpen ? Icons.close : Icons.search),
             ),
             IconButton(
               key: const ValueKey('channel-header-profile-edit'),

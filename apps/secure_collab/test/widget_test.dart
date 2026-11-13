@@ -115,6 +115,73 @@ void main() {
     },
   );
 
+  testWidgets('channel message search is local and filters plaintext safely', (
+    tester,
+  ) async {
+    final sync = FakeMessageSync({'secure-channel-0'});
+    addTearDown(sync.close);
+    await tester.pumpWidget(SecureCollabApp(messageSync: sync));
+
+    await tester.tap(
+      find.byKey(const ValueKey('collab-mobile-message-search-toggle')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.'), findsOneWidget);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('collab-message-search-field')),
+      '키 교체',
+    );
+    await tester.pump();
+    await tester.drag(
+      find.byKey(const ValueKey('collab-message-list')),
+      const Offset(0, -320),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('키 교체 시나리오와 장치 해지 테스트를 체크리스트에 추가했습니다.'), findsOneWidget);
+    expect(find.text('오로라 베타 범위를 정리했습니다. 오늘 4시 검토 전에 의견 부탁드려요.'), findsNothing);
+    expect(sync.sentPlaintexts, isEmpty);
+
+    await tester.enterText(
+      find.byKey(const ValueKey('collab-message-search-field')),
+      '일치하지 않는 검색어',
+    );
+    await tester.pump();
+    expect(
+      find.byKey(const ValueKey('collab-message-search-empty')),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('desktop search exposes an accessible open and close state', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    await tester.pumpWidget(const SecureCollabApp());
+
+    final toggle = find.byKey(
+      const ValueKey('collab-desktop-message-search-toggle'),
+    );
+    expect(find.byTooltip('검색'), findsWidgets);
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('메시지 검색 닫기'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('collab-message-search-field')),
+      findsOneWidget,
+    );
+
+    await tester.tap(toggle);
+    await tester.pumpAndSettle();
+    expect(
+      find.byKey(const ValueKey('collab-message-search-field')),
+      findsNothing,
+    );
+  });
+
   testWidgets(
     'attachment composer remains usable with keyboard and 200 percent text',
     (tester) async {

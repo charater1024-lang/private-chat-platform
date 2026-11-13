@@ -201,6 +201,15 @@ final class PreparedRequestStoreConflictException implements Exception {
       'PreparedRequestStoreConflictException(data: <redacted>)';
 }
 
+/// Sanitized persistent-storage failure which retains no paths or records.
+final class PreparedRequestStorePersistenceException implements Exception {
+  const PreparedRequestStorePersistenceException();
+
+  @override
+  String toString() =>
+      'PreparedRequestStorePersistenceException(data: <redacted>)';
+}
+
 Uint8List _copyBounded(Iterable<int> values, {required int maximum}) {
   final copied = List<int>.of(values, growable: false);
   if (copied.isEmpty ||

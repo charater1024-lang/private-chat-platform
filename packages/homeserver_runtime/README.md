@@ -1,8 +1,19 @@
 # homeserver_runtime
 
-`homeserver_runtime` is a runnable, loopback-only reference vertical for the
-personally owned chat homeserver. It uses `dart:io` directly and listens only on
-`127.0.0.1`; it cannot be configured to bind to a LAN or public interface.
+The listener remains IPv4 loopback by default. Networked composition must use
+`HomeserverListenerPolicy.privateReverseProxy` with a concrete RFC1918/ULA bind
+address, exact proxy peer addresses, exact Host values, HTTPS forwarding and a
+high-entropy internal-hop credential. Public and wildcard binds are rejected.
+
+`Ed25519DeviceProofVerifier` is the concrete registration proof verifier.
+`SecurePersistenceSnapshotProtector` supplies ChaCha20-Poly1305 snapshot
+protection, but its master key must come from an OS keystore or protected secret
+service. There is no plaintext key-file fallback.
+
+`homeserver_runtime` is a runnable reference vertical for the personally owned
+chat homeserver. It uses `dart:io` directly and remains on `127.0.0.1` unless a
+launcher explicitly supplies the constrained private-reverse-proxy policy. It
+cannot bind a wildcard or public address.
 
 Implemented HTTP flows:
 
@@ -94,16 +105,24 @@ the snapshot directory in an operating-system credential store.
 
 ## Security boundary
 
-Plain HTTP is intentional only because the listener is strictly loopback. A
-production home-server process must place an authenticated TLS gateway in front
-of this service without changing the loopback bind.
+Plain HTTP is intentional only on loopback or the isolated private hop selected
+by `HomeserverListenerPolicy.privateReverseProxy`. A networked process must be
+behind an authenticated TLS gateway and retain the exact peer, Host, internal
+credential and `X-Forwarded-Proto: https` checks. The repository does not yet
+provide the production launcher, external key provider or generation-anchor
+adapter needed to expose `/v1`; the Matrix Compose reference is not compatible
+with this runtime.
 
 The runtime now has a versioned, deterministic state codec and an injectable
 `HomeserverRuntimeSnapshotStore` boundary. With a store configured, every
 state-changing POST/PUT and every new pagination/sync cursor is serialized
 through one request gate. The complete next state is committed with generation
 compare-and-swap before the HTTP success response is written. A failed commit
-restores the prior in-memory state and returns no success ACK. Recovery validates
+restores the prior in-memory state and returns no success ACK. Because a
+rename may have succeeded before an anchor/provider failure became visible,
+any persistence failure terminally faults the live runtime; all later requests
+receive `503 PERSISTENCE_UNAVAILABLE` until restart recovery reconciles the
+authenticated disk head and protected anchor. Recovery validates
 the server/domain/policy/product/owner binding, exact object keys, canonical
 encodings and timestamps, membership and device references, message sequences,
 chunk and object digests, resource versions, derived counters, and configured
@@ -126,10 +145,11 @@ encryption is mandatory and its key must never be stored beside the snapshots.
 binds namespace and generation as AEAD associated data, flushes a same-directory
 temporary record before renaming it to an immutable generation, serializes
 writers with an OS file lock, and rejects a corrupt highest generation instead
-of silently falling back. Interrupted `.tmp` files are never committed. A
-trusted external `minimumSnapshotGeneration` detects deletion rollback; without
-an anchor outside the snapshot directory, file deletion rollback is
-indistinguishable from an older store.
+of silently falling back. Interrupted `.tmp` files are never committed. Its
+mandatory external anchor binds both generation and a SHA-256 commitment of the
+exact committed record, detecting deletion rollback and same-generation fork
+substitution. `minimumSnapshotGeneration` is an additional launcher floor, not
+a replacement for that separately protected head.
 
 This is a correctness-oriented reference store, not a scalable production
 database. Each mutation validates and rewrites the complete bounded snapshot,
@@ -140,9 +160,10 @@ operator-controlled restart. Higher-throughput deployments should replace the
 interface with an audited transactional database preserving the same
 commit-before-ACK and rollback properties.
 
-The portable POSIX verifier accepts only an actual owner-rwx directory with no
-group/other mode bits. It intentionally rejects Windows; a Windows launcher
-must provide a native effective-ACL/reparse-point verifier. Dart can flush file
+The portable POSIX verifier checks for an actual directory with owner-rwx and
+no group/other mode bits; Dart's portable metadata does not prove the effective
+owner identity. Root/container launchers and Windows launchers must provide a
+native effective-owner/ACL/reparse-point verifier. Dart can flush file
 contents and rename within one directory, but its portable API cannot fsync the
 containing directory or prove platform backup, indexing, data-protection and
 full-disk-encryption policy. Production adapters must supply and fault-test

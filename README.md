@@ -20,11 +20,13 @@
 현재 저장소는 실행 가능한 UI·도메인 프로토타입과 loopback reference
 homeserver/client vertical을 포함합니다. 인증된 암호문 HTTP 전달과 재연결
 동기화는 두 Flutter 앱의 주입형 outbound text 경로까지 연결했습니다. 기본
-`main()`은 검토된 암호화 구현과 자격 증명을 갖고 있지 않으므로 의도적으로
-로컬 전용입니다. 실제 OpenMLS E2EE, OS 기기 자격 증명·키 저장소, 운영용
-암호화 DB, 블록체인 adapter와 production TLS gateway도 아직 구현되지
-않았습니다. 화면에 표시되는 E2EE와 블록체인 상태는 설계 목표이지 보안
-인증이 아닙니다.
+`main()`은 검토된 운영 composition과 자격 증명을 갖고 있지 않으므로 의도적으로
+로컬 전용입니다. OpenMLS 0.9.2 상태 머신, Automerge 0.12.0 문서 코어,
+key-transparency EVM verifier와 최소 Solidity checkpoint contract는 격리된
+prototype으로 존재합니다. 그러나 OpenMLS/CRDT FFI·앱 연결·crash-safe native
+상태 저장, OS 기기 자격 증명·키 저장소, 운영용 암호화 DB, concrete wallet/RPC
+연결과 contract 배포는 아직 없습니다. 화면에 표시되는 E2EE와 블록체인 상태는
+설계 목표이지 보안 인증이 아닙니다.
 
 ## 두 제품
 
@@ -49,6 +51,14 @@ homeserver/client vertical을 포함합니다. 인증된 암호문 HTTP 전달�
 - HTTPS 기본값의 인증 HTTP adapter와 transactional outbox·cursor·reconnect core
 - 두 앱의 주입형 암호화 text/outbox/HTTP 전송, 실제 예약 재시도와 메시지별
   queued·blocked·failed·ACK 상태 갱신 UI
+- 두 앱의 서버 비전송·기기 내 메시지 검색 UI와 오래된 기기 보호용 검색
+  범위·결과·검색어 상한
+- 답장·편집·삭제 tombstone·반응·읽음 상태의 client-only 도메인 계약
+  (전송·암호화 영속화·앱 편집 UI 연결은 아직 필요)
+- 보안과 기본 메신저 기능을 모든 요금제에서 무료로 고정하고 업무 자동화·
+  조직 연동만 유료 후보로 분리하는 entitlement 정책
+- Secure Collab용 암호화 공동 문서 권한·event admission·동의 계약과 별도
+  Automerge CRDT prototype(현재 앱·서버·FFI에는 연결하지 않음)
 - runtime 전체 상태의 결정적 snapshot, 응답 전 CAS commit, 실패 rollback과
   인증·멱등성·암호문 메시지·미디어 재시작 복구
 - 독립 청크 AEAD attachment 실험, 암호문 청크 무결성·재개 전송 port와 전체
@@ -57,7 +67,9 @@ homeserver/client vertical을 포함합니다. 인증된 암호문 HTTP 전달�
 - 프로필 사진, 커버, 상태 메시지와 연두·보라 테마
 - 6개 투톤 캐릭터의 단독 120개와 혼합 12개, 총 132개 동적 이모티콘
 - 200% 글자 확대, 키보드, screen reader semantics와 동작 줄이기 회귀 검사
-- OpenAPI v0.7과 폐쇄형 Synapse/PostgreSQL/Caddy reference deployment
+- OpenAPI v0.8과 폐쇄형 Synapse/PostgreSQL/Caddy reference deployment
+- Android·iOS Simulator·Windows·Linux의 두 앱 8개 debug build 조합을
+  확인하는 수동 GitHub Actions smoke workflow
 
 파일을 고르고 보내는 UI는 동작하지만 첨부 결과는 아직 메모리 안의 로컬
 메시지 카드입니다. Text는 운영 composition root가 검토된 E2EE·암호화 영속
@@ -82,8 +94,14 @@ packages/
   homeserver_client/   # 인증·profile 고정 HTTP sync adapter
   homeserver_runtime/  # loopback reference server와 주입형 durable snapshot 경계
   key_transparency/    # Merkle proof, witness와 선택적 checkpoint anchor 계약
+  product_entitlements/ # 보안·기본 기능을 유료화하지 않는 요금제 정책
+  secure_persistence/  # 외부 키·rollback anchor가 필요한 암호화 record 경계
+  collab_documents/    # 암호화 공동 문서 권한·event·동의·영속 port
+native/
+  openmls_bridge/      # OpenMLS 0.9.2 상태 머신 prototype, public FFI 없음
+  collab_crdt_bridge/  # Automerge 0.12.0 문서 core prototype, rlib 전용
 deploy/self-host/      # 폐쇄형 reference deployment
-contracts/             # 앱과 gateway 사이의 OpenAPI 초안
+contracts/             # OpenAPI 계약과 최소 key-transparency Solidity contract
 docs/                  # 제품·보안·운영·미디어·출시 문서
 ```
 
@@ -91,6 +109,7 @@ docs/                  # 제품·보안·운영·미디어·출시 문서
 [제품 범위](docs/product-scope.md), [보안 아키텍처](docs/security-architecture.md),
 [위협 모델](docs/security-threat-model.md), [운영 절차](docs/security-operations.md),
 [백엔드 경계](docs/backend-contract.md), [미디어 설계](docs/media-profile-design.md),
+[무료·유료 기능 경계](docs/product-entitlements.md),
 [연구·신기술 적용 검토](docs/research-technology-review.md),
 [오픈소스 거버넌스](docs/open-source-governance.md),
 [출시 준비 현황](docs/release-readiness.md)과 [로드맵](docs/roadmap.md)입니다.
@@ -107,8 +126,10 @@ privacy dashboard가 필요합니다.
 [`deploy/self-host`](deploy/self-host/README.md)는 Synapse, PostgreSQL과 Caddy의
 검토용 구성입니다. 외부 push와 federation을 기본 차단하고 DB secret 분리,
 read-only container, 최소 capability와 image digest 고정을 지향합니다. 이
-구성은 아직 Flutter 앱이나 정식 gateway에 연결되지 않았고, 실행만으로
-E2EE가 완성되는 것은 아닙니다.
+구성은 **Matrix reference**이며 custom `/v1`을 사용하는 Flutter 앱 backend가
+아닙니다. `/v1/*`은 의도적으로 `503`이고 release preflight도 이를 차단합니다.
+외부 key provider·rollback anchor를 갖춘 안전한 launcher와 정식 gateway가
+연결되기 전에는 실행만으로 network messenger나 E2EE가 완성되지 않습니다.
 
 ## 미디어와 블록체인 경계
 
@@ -164,8 +185,9 @@ Windows의 한글 경로에서 발생할 수 있는 Flutter 도구 문제를 피
 경계, OpenAPI, locked dependency CycloneDX SBOM 입력과 self-host 정적 정책을
 확인합니다. `generate-sbom.ps1`은 `build/release` 아래에 재현 가능한 SBOM을
 생성합니다. `check.ps1` 성공은 native release build, 실기기 시험이나 외부
-보안 검토를 대신하지 않습니다. 2026-09-03 기준 locked source gate는 146개
-Dart 파일의 format·analyze와 총 358개 자동 테스트를 모두 통과했습니다.
+보안 검토를 대신하지 않습니다. 2026-11-13 기준 source gate는 189개
+Dart 파일의 format, 14개 앱·package 분석과 총 454개 자동 테스트를 모두
+통과했습니다.
 Windows 한글 경로에서 Flutter shader compiler가 남길 수 있는 불완전 시험
 asset은 검증된 ASCII junction에서 다시 생성합니다. 현재 근거와 차단 조건은
 [출시 준비 현황](docs/release-readiness.md)에 기록합니다.
@@ -186,10 +208,11 @@ asset은 검증된 ASCII junction에서 다시 생성합니다. 현재 근거와
 
 ## 다음 구현 순서
 
-1. 현재 fail-closed Cargo gate를 `cargo metadata --locked`·source provenance
-   검증으로 대체한 뒤, 정식 OpenMLS 0.9 이상 앱 소유 Rust bridge와 RFC vector/fuzz/interop
-2. OS 기기 자격 증명과 키 저장소, 암호화 로컬 DB에 outbox·cursor·MLS 상태 연결
-3. 수신 암호문 복호화/UI 반영과 다중 기기 key lifecycle
+1. 현재 OpenMLS·Automerge 변경을 3-host native CI에서 재검증하고 RFC
+   vector·interop·fuzz와 독립 보안 검토 수행
+2. 제한된 native FFI와 OS 기기 자격 증명·키 저장소를 만들고, 암호화 로컬 DB에
+   outbox·cursor·MLS·CRDT·replay 상태를 원자적으로 연결
+3. 수신 암호문 복호화/UI 반영, Secure Collab 공동 문서 UI와 다중 기기 key lifecycle
 4. 이미지·영상·파일의 signature/codec 검사, EXIF 제거와 안전한 thumbnail
 5. 앱에 production streaming attachment·resumable upload/download를 연결하고
    강제 종료·손상 복구 검증

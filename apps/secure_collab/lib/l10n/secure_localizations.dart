@@ -110,6 +110,36 @@ abstract class SecureLocalizations {
   /// **'검색'**
   String get search;
 
+  /// No description provided for @messageSearchHint.
+  ///
+  /// In ko, this message translates to:
+  /// **'현재 채널의 메시지 검색'**
+  String get messageSearchHint;
+
+  /// No description provided for @closeMessageSearch.
+  ///
+  /// In ko, this message translates to:
+  /// **'메시지 검색 닫기'**
+  String get closeMessageSearch;
+
+  /// No description provided for @clearSearch.
+  ///
+  /// In ko, this message translates to:
+  /// **'검색어 지우기'**
+  String get clearSearch;
+
+  /// No description provided for @messageSearchLocalOnly.
+  ///
+  /// In ko, this message translates to:
+  /// **'메시지 내용은 서버로 보내지 않고 이 기기에서만 검색합니다.'**
+  String get messageSearchLocalOnly;
+
+  /// No description provided for @noMessageSearchResults.
+  ///
+  /// In ko, this message translates to:
+  /// **'이 채널에서 일치하는 메시지를 찾지 못했습니다.'**
+  String get noMessageSearchResults;
+
   /// No description provided for @channelInfo.
   ///
   /// In ko, this message translates to:
