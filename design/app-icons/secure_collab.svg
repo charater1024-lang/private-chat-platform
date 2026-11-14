@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Secure Collab</title>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7A4DD0"/>
+      <stop offset="1" stop-color="#4A238B"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#E0FFA4"/>
+      <stop offset="1" stop-color="#B8F05A"/>
+    </linearGradient>
+  </defs>
+  <rect id="background" width="512" height="512" fill="url(#tile)"/>
+  <g id="mark">
+    <path fill="#361861" d="M263 111c53 27 96 29 125 30 9 0 15 7 15 16v79c0 75-48 124-136 160-5 2-9 2-14 0-85-36-136-85-136-160v-79c0-9 6-15 15-16 28-1 70-3 124-30 3-1 5-1 7 0Z" opacity=".42" transform="translate(0 10)"/>
+    <path fill="url(#shield)" d="M263 111c53 27 96 29 125 30 9 0 15 7 15 16v79c0 75-48 124-136 160-5 2-9 2-14 0-85-36-136-85-136-160v-79c0-9 6-15 15-16 28-1 70-3 124-30 3-1 5-1 7 0Z"/>
+    <path fill="#442075" d="M203 196h112c22 0 37 16 37 37v30c0 22-15 37-37 37h-70l-40 24c-5 3-12-1-12-7v-18c-16-4-27-18-27-36v-30c0-21 15-37 37-37Z"/>
+    <path d="M218 238h82m-82 23h51" fill="none" stroke="#D9FFA2" stroke-width="9" stroke-linecap="round"/>
+  </g>
+</svg>
